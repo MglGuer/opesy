@@ -59,7 +59,7 @@ void createScreen (string &screenName){
     strftime(buffer, sizeof(buffer), "%m/%d/%Y, %I:%M:%S %p", timeinfo); //changes time format
     newScreen.timeCreated = buffer;
 
-    screenList.emplace_back(newScreen); //adds screen to vector for storage
+    screenList.emplace_back(newScreen);     //adds screen to vector for storage
     
 }
 
@@ -78,11 +78,27 @@ void screen(string &screenCommand){
     }
 
     else if(option == "-r" && !screenName.empty()){
-        //TODO screen -r
+        //TODO screen -r  
+        bool found = false;
+        for(auto& scr : screenList){
+            if(scr.screenName == screenName){
+            system("CLS");
+            cout << "Screen: " << scr.screenName << endl;
+            cout << "Running instruction: " << scr.curInstruction << "out of" << scr.totalInstruction << endl;
+            cout << "Time Created: " << scr.timeCreated << endl << endl;
+            found = true;
+            break;
+        }
+        if(!found){
+            cout << "Screen \"" << screenName << "\" not found." << endl << endl;
+        }
+    }
 
     }
 
+
     string screenInput;
+
     while(screenInput != "exit"){
         cout << "Enter a command, or type exit to return to the main menu: ";
         getline(cin, screenInput);
@@ -94,6 +110,8 @@ void screen(string &screenCommand){
         }
     }
 }
+
+
 
 void schedulertest(){
     cout << "Scheduler-test command recognized. Doing something.\n\n";
