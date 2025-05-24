@@ -52,7 +52,7 @@ void createScreen (string &screenName){
     Screen newScreen; //initialize a new screen
     newScreen.screenName = screenName;
     newScreen.totalInstruction = rand()%50+1; //placeholder total instructions
-    newScreen.curInstruction = newScreen.totalInstruction-1; //placeholder currnet instruction, guaranteed to be less than total instruction
+    newScreen.curInstruction = rand()%(newScreen.totalInstruction-1)+1; //placeholder currnet instruction, guaranteed to be less than total instruction
     
     char buffer[30]; //array to store new time format
     tm* timeinfo = localtime(&timestamp); 
@@ -60,7 +60,7 @@ void createScreen (string &screenName){
     newScreen.timeCreated = buffer;
 
     screenList.emplace_back(newScreen); //adds screen to vector for storage
-    cout << "New screen named \"" << screenName << "\" has been created." << endl << endl;
+    
 }
 
 void screen(string &screenCommand){
@@ -70,10 +70,10 @@ void screen(string &screenCommand){
 
     if(option == "-s" && !screenName.empty()){
         createScreen(screenName);
-        
+        system("CLS");
         Screen& createdScreen = screenList.back(); //gets the most recently added screen for display
         cout << "Current screen: " << createdScreen.screenName << endl;
-        cout << "Running instruction: " << createdScreen.curInstruction << "/" << createdScreen.totalInstruction << endl;
+        cout << "Running instruction: " << createdScreen.curInstruction << " out of " << createdScreen.totalInstruction << endl;
         cout << "Time Created: " << createdScreen.timeCreated << endl << endl;
     }
 
@@ -88,6 +88,9 @@ void screen(string &screenCommand){
         getline(cin, screenInput);
         if(screenInput != "exit"){
             cout << "Sorry, that command does not work right now. Only 'exit' works at the moment." << endl << endl;
+        }
+        else{
+            system("CLS");
         }
     }
 }
