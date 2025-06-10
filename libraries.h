@@ -10,7 +10,6 @@
 #include <random>
 #include <algorithm>
 #include <stdlib.h>
-#include <windows.h>
 #include <ctime>
 #include <climits>
 

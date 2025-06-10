@@ -1,4 +1,12 @@
-#include "libraries.h"
+#include <iostream>
+#include <fstream>
+#include <string>
+#include <vector>
+#include <sstream>
+#include <ctime>
+#include <cstdlib>
+#include <algorithm>
+#include <iomanip>
 
 // class that includes screen details
 class Screen{
@@ -9,11 +17,26 @@ class Screen{
         std::string timeCreated;
 };
 
-std::vector<Screen> screenList; //global vector for list of screens (c++ can't handle dynamic sized arrays)
+std::vector<Screen> screenList; //global vector for list of screens
 
-//changes the font color of the text in the terminal
+//changes the font color of the text in the terminal using ANSI escape codes
 void setColor(int color){
-    SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), color);
+    // ANSI color codes for cross-platform compatibility
+    switch(color) {
+        case 7:  std::cout << "\033[37m"; break;  // White
+        case 10: std::cout << "\033[32m"; break;  // Green
+        case 14: std::cout << "\033[33m"; break;  // Yellow
+        default: std::cout << "\033[37m"; break;  // Default to white
+    }
+}
+
+// Cross-platform clear screen function
+void clearScreen() {
+    #ifdef _WIN32
+        system("cls");
+    #else
+        system("clear");
+    #endif
 }
 
 //opens and reads a file containing ASCII art for the main menu title
@@ -44,7 +67,7 @@ void createScreen (std::string &screenName){
     Screen newScreen; //initialize a new screen
     newScreen.screenName = screenName;
     newScreen.totalInstruction = std::rand()%50+1; //placeholder total instructions
-    newScreen.curInstruction = std::rand()%(newScreen.totalInstruction-1)+1; //placeholder currnet instruction, guaranteed to be less than total instruction
+    newScreen.curInstruction = std::rand()%(newScreen.totalInstruction-1)+1; //placeholder current instruction, guaranteed to be less than total instruction
     
     char buffer[30]; //array to store new time format
     std::tm* timeinfo = std::localtime(&timestamp); 
@@ -52,7 +75,6 @@ void createScreen (std::string &screenName){
     newScreen.timeCreated = buffer;
 
     screenList.emplace_back(newScreen);       //adds screen to vector for storage
-    
 }
 
 void screen(std::string &screenCommand){
@@ -62,32 +84,29 @@ void screen(std::string &screenCommand){
 
     if(option == "-s" && !screenName.empty()){
         createScreen(screenName);
-        system("CLS");
+        clearScreen();
         Screen& createdScreen = screenList.back(); //gets the most recently added screen for display
         std::cout << "Current screen: " << createdScreen.screenName << std::endl;
         std::cout << "Running instruction: " << createdScreen.curInstruction << " out of " << createdScreen.totalInstruction << std::endl;
         std::cout << "Time Created: " << createdScreen.timeCreated << std::endl << std::endl;
     }
-
     else if(option == "-r" && !screenName.empty()){
         //TODO screen -r  
         bool found = false;
         for(auto& scr : screenList){
             if(scr.screenName == screenName){
-            system("CLS");
-            std::cout << "Screen: " << scr.screenName << std::endl;
-            std::cout << "Running instruction: " << scr.curInstruction << "out of" << scr.totalInstruction << std::endl;
-            std::cout << "Time Created: " << scr.timeCreated << std::endl << std::endl;
-            found = true;
-            break;
+                clearScreen();
+                std::cout << "Screen: " << scr.screenName << std::endl;
+                std::cout << "Running instruction: " << scr.curInstruction << " out of " << scr.totalInstruction << std::endl;
+                std::cout << "Time Created: " << scr.timeCreated << std::endl << std::endl;
+                found = true;
+                break;
+            }
         }
         if(!found){
             std::cout << "Screen \"" << screenName << "\" not found." << std::endl << std::endl;
         }
     }
-
-    }
-
 
     std::string screenInput;
 
@@ -98,12 +117,10 @@ void screen(std::string &screenCommand){
             std::cout << "Sorry, that command does not work right now. Only 'exit' works at the moment." << std::endl << std::endl;
         }
         else{
-            system("CLS");
+            clearScreen();
         }
     }
 }
-
-
 
 void schedulertest(){
     std::cout << "Scheduler-test command recognized. Doing something.\n\n";
@@ -142,7 +159,7 @@ void menu(){
             exit(0);
         }
         else if (command == "clear"){
-            system("CLS"); //clears the system
+            clearScreen(); //clears the system
             intro(); //reprints the main menu
         }
         else if(command == "initialize"){
@@ -160,11 +177,15 @@ void menu(){
         else if(command == "report-util"){
             reportutil();
         }
+        else{
+            std::cout << "Unknown command. Please try again.\n\n";
+        }
     }
-        
 }
 
 int main(){
+    // Seed random number generator
+    std::srand(static_cast<unsigned int>(std::time(nullptr)));
     menu();
     return 0;
 }
