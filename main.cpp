@@ -57,7 +57,7 @@ void printASCII(std::string fileName){
 }
 
 void initialize(){
-    std::cout << "Initialize command recognized. Doing something.\n\n";
+    std::cout << "System Initialized. You may now create screens and perform other actions.\n\n";
 }
 
 void createScreen (std::string &screenName){
@@ -146,6 +146,7 @@ void intro(){
 void menu(){
     std::string fileName = "ascii.txt";
     std::string input;
+    bool initialized = false;
 
     while (true){
         intro();
@@ -164,6 +165,10 @@ void menu(){
         }
         else if(command == "initialize"){
             initialize();
+            initialized = true;
+        }
+        else if (!initialized) {
+            std::cout << "Command is not recognized. Please initialize the system first by using the 'initialize' command.\n\n";
         }
         else if(command.rfind("screen",0) == 0){
             screen(command);
