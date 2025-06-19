@@ -6,11 +6,11 @@
 #include <stdlib.h>
 #include <windows.h>
 #include <ctime>
-#include <cstudio>  // for deleting files
 #include <thread>
 #include <mutex>
 #include <queue>
 #include <algorithm> // for sort
+#include <filesystem>
 
 #define MAX_CORES 4
 #define MAX_SCREENS 10
@@ -26,7 +26,6 @@ bool isRunning = true;
 
 std::vector<Screen> screenList; //global vector for list of screens
 std::vector<Screen> finishedProcess;
-std::queue<Screen*> readyQueue;
 std::vector<std::thread> coreList;
 
 Screen curScreen;
@@ -54,7 +53,7 @@ class Process{
     private:
         string name;
         int remainingInstructions;
-        int totalInstructions;
+        int totalInstructions = NUM_COMMANDS_PER_PROCESS;
         int id;
 
     public:
@@ -66,21 +65,23 @@ class Process{
     void printInstruction(){
         
         string fileType = ".txt";
-        processFile = name + fileType;      // using process name as filename (it should be smth like process01, process02, etc etc)
-        
-        // if the file for a process exists, deletes the existing one and replaces it with a new one
-        if(std::filesystem::exists(processFile)){
-            remove(processFile);                    
-        }
+        string processFile = name + fileType;      // using process name as filename (it should be smth like process01, process02, etc etc)
+
          
         std::ofstream newFile(processFile);
+        /*if(newFile.good()){
+            DeleteFile(processFile);
+        }*/
         
         if(newFile.is_open()){
-            newFile << "Hello world from " << name;
+            // printing for 100 lines
+            for(int i=0; i<NUM_COMMANDS_PER_PROCESS; i++){
+                    newFile << "Hello world from " << name;
+                }
             newFile.close();
         }
         else{
-            cout << err << "Failed to create the file: " << processFile << endl;
+            cout << "Failed to create the file: " << processFile << endl;
         }
         
         
@@ -92,11 +93,11 @@ class Process{
     
     // Execute one instruction of the process
     void executeInstruction() {
+        
         if (remainingInstructions > 0) {
-            std::cout << "Executing instruction for Process " << id << ": " << name << "\n";
+            printInstruction();
             remainingInstructions--;
         } else {
-            std::cout << "Process " << id << ": " << name << " has already finished.\n";
             //add the process to the finishedProcess vector
         }
     }
@@ -128,10 +129,10 @@ class Process{
 class FCFSScheduler {
     private:
         int numCores;
-        std::vector<std::vector<Process>> processQueues; // One queue for each core
+        std::vector<std::vector<Process>> processQueues; // ready queue for fcfs
 
     public:
-        FCFSScheduler(int cores) : numCores(cores), processQueues(cores) {}
+        FCFSScheduler(int cores) : numCores(cores){}
 
     // Add a process to the scheduler
     void addProcess(const Process& process, int core = MAX_CORES) {
@@ -143,16 +144,24 @@ class FCFSScheduler {
     }
 
     // Sort the process queues based on remaining instructions (FCFS)
-    void sortProcessQueues() {
-        for (auto& queue : processQueues) {
-            std::sort(queue.begin(), queue.end(), [](const Process& a, const Process& b) {
-                return a.getRemainingInstructions() > b.getRemainingInstructions();
-            });
-        }
-    }
+    // void sortProcessQueues() {
+    //     for (auto& queue : processQueues) {
+    //         std::sort(queue.begin(), queue.end(), [](const Process& a, const Process& b) {
+    //             return a.getRemainingInstructions() > b.getRemainingInstructions();
+    //         });
+    //     }
+    // }
 
     // Run the scheduler
     void runScheduler() {
+        for(int i=1; i <= MAX_SCREENS; i++){
+            string processname = "screen_";
+            if(i<10)
+                processname+="0";
+            processname+=i+1;
+            Process newProcess(processname, i, NUM_COMMANDS_PER_PROCESS);
+            addProcess(newProcess);
+        }
         while (!processQueues[0].empty()) { // This condition likely needs refinement for multiple cores
             for (int core = 0; core < numCores; ++core) {
                 if (!processQueues[core].empty()) {
@@ -163,7 +172,7 @@ class FCFSScheduler {
                         currentProcess.executeInstruction();
                     }
 
-                    std::cout << "Process " << currentProcess.getRemainingInstructions() << " completed on Core " << core + 1 << ".\n";
+                    //std::cout << "Process " << currentProcess.getRemainingInstructions() << " completed on Core " << core + 1 << ".\n";
                 }
             }
         }
@@ -288,13 +297,13 @@ void screen(string &screenCommand){
 
 // void roundrobin(){
 //  TODO: round robin scheduler
-// }
+// } 
 
 void schedulertest(){
     cout << "Starting scheduler..." << endl;
     FCFSScheduler fcfs(MAX_CORES);
-    std::thread schedulertest(&FCFSScheduler::runScheduler, &fcfs);
-    schedulertest.detach();
+    std::thread runscheduler(&FCFSScheduler::runScheduler, &fcfs);
+    runscheduler.detach();
     /*if(scheduler == "fcfs"){
         std::thread scheduler(fcfs);
         scheduler.detach(); (or join, im not sure)
