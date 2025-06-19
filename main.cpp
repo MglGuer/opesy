@@ -1,142 +1,322 @@
 #include <iostream>
-#include <fstream>
 #include <string>
 #include <vector>
+#include <fstream>
 #include <sstream>
+#include <stdlib.h>
+#include <windows.h>
 #include <ctime>
-#include <cstdlib>
-#include <algorithm>
-#include <iomanip>
+#include <cstudio>  // for deleting files
+#include <thread>
+#include <mutex>
+#include <queue>
+#include <algorithm> // for sort
 
-// class that includes screen details
-class Screen{
-    public:
-        std::string screenName;
-        int curInstruction;
-        int totalInstruction;
-        std::string timeCreated;
-};
+#define MAX_CORES 4
+#define MAX_SCREENS 10
+#define NUM_COMMANDS_PER_PROCESS 100
+
+using namespace std;
+
+
+std::mutex queueMutex;
+std::mutex mutx;  
+
+bool isRunning = true;
 
 std::vector<Screen> screenList; //global vector for list of screens
+std::vector<Screen> finishedProcess;
+std::queue<Screen*> readyQueue;
+std::vector<std::thread> coreList;
 
-//changes the font color of the text in the terminal using ANSI escape codes
-void setColor(int color){
-    // ANSI color codes for cross-platform compatibility
-    switch(color) {
-        case 7:  std::cout << "\033[37m"; break;  // White
-        case 10: std::cout << "\033[32m"; break;  // Green
-        case 14: std::cout << "\033[33m"; break;  // Yellow
-        default: std::cout << "\033[37m"; break;  // Default to white
-    }
+Screen curScreen;
+
+string getTimestamp(){
+    time_t timestamp; //make a time_t variable
+    time(&timestamp); //gets the current time
+    char buffer[30]; //array to store new time format
+    tm* timeinfo = localtime(&timestamp); 
+    strftime(buffer, sizeof(buffer), "%m/%d/%Y, %I:%M:%S %p", timeinfo); //changes time format
+    return buffer;
 }
 
-// Cross-platform clear screen function
-void clearScreen() {
-    #ifdef _WIN32
-        system("cls");
-    #else
-        system("clear");
-    #endif
+
+// class that includes screen details
+struct Screen{
+    string screenName;
+    int curInstruction;
+    int totalInstruction;
+    string timeCreated;
+
+};
+
+class Process{
+    private:
+        string name;
+        int remainingInstructions;
+        int totalInstructions;
+        int id;
+
+    public:
+    // Constructor
+        Process(const std::string& processName, int processId, int numInstructions): 
+            name(processName), id(processId), totalInstructions(numInstructions), remainingInstructions(numInstructions) {}
+    
+    // print instruction where the process creates a new file and prints required string in file
+    void printInstruction(){
+        
+        string fileType = ".txt";
+        processFile = name + fileType;      // using process name as filename (it should be smth like process01, process02, etc etc)
+        
+        // if the file for a process exists, deletes the existing one and replaces it with a new one
+        if(std::filesystem::exists(processFile)){
+            remove(processFile);                    
+        }
+         
+        std::ofstream newFile(processFile);
+        
+        if(newFile.is_open()){
+            newFile << "Hello world from " << name;
+            newFile.close();
+        }
+        else{
+            cout << err << "Failed to create the file: " << processFile << endl;
+        }
+        
+        
+        
+    }
+
+    //void addInstruction(){
+    //}
+    
+    // Execute one instruction of the process
+    void executeInstruction() {
+        if (remainingInstructions > 0) {
+            std::cout << "Executing instruction for Process " << id << ": " << name << "\n";
+            remainingInstructions--;
+        } else {
+            std::cout << "Process " << id << ": " << name << " has already finished.\n";
+            //add the process to the finishedProcess vector
+        }
+    }
+
+    // Get the remaining number of instructions
+    int getRemainingInstructions() const {
+        return remainingInstructions;
+    }
+
+    // Check if the process has finished
+    bool hasFinished() const {
+        return remainingInstructions == 0;
+    }
+
+    /*
+    string startTime;
+    string endTime;
+    int coreAssigned;
+
+    int burstTime;
+    bool isFinished;
+
+    string fileName;
+    */
+    
+};
+
+// FCFS scheduler template provided by Doc Neil's notes
+class FCFSScheduler {
+    private:
+        int numCores;
+        std::vector<std::vector<Process>> processQueues; // One queue for each core
+
+    public:
+        FCFSScheduler(int cores) : numCores(cores), processQueues(cores) {}
+
+    // Add a process to the scheduler
+    void addProcess(const Process& process, int core = MAX_CORES) {
+        if (core >= 0 && core < numCores) {
+            processQueues[core].push_back(process);
+        } else {
+            std::cerr << "Invalid core specified for process addition.\n";
+        }
+    }
+
+    // Sort the process queues based on remaining instructions (FCFS)
+    void sortProcessQueues() {
+        for (auto& queue : processQueues) {
+            std::sort(queue.begin(), queue.end(), [](const Process& a, const Process& b) {
+                return a.getRemainingInstructions() > b.getRemainingInstructions();
+            });
+        }
+    }
+
+    // Run the scheduler
+    void runScheduler() {
+        while (!processQueues[0].empty()) { // This condition likely needs refinement for multiple cores
+            for (int core = 0; core < numCores; ++core) {
+                if (!processQueues[core].empty()) {
+                    Process currentProcess = processQueues[core].back(); // Likely intended to be front() for FCFS
+                    processQueues[core].pop_back(); // Likely intended to be pop_front()
+
+                    while (!currentProcess.hasFinished()) {
+                        currentProcess.executeInstruction();
+                    }
+
+                    std::cout << "Process " << currentProcess.getRemainingInstructions() << " completed on Core " << core + 1 << ".\n";
+                }
+            }
+        }
+    }
+};
+
+//changes the font color of the text in the terminal
+void setColor(int color){
+    SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), color);
 }
 
 //opens and reads a file containing ASCII art for the main menu title
-void printASCII(std::string fileName){
-    std::string line = ""; //line being read
-    std::ifstream inFile; //input file stream
+void printASCII(string fileName){
+    string line = ""; //line being read
+    ifstream inFile; //input file stream
     inFile.open(fileName); //opens the file
     if(inFile.is_open()){
-        while(std::getline(inFile, line))
+        while(getline(inFile, line))
         {
-            std::cout << line << std::endl; //prints file content
+            cout << line << endl; //prints file content
         }
     }
     else{
-        std::cout << "File failed to load. " << std::endl;
+        cout << "File failed to load. " << endl;
     }
     inFile.close();
 }
 
 void initialize(){
-    std::cout << "System Initialized. You may now create screens and perform other actions.\n\n";
+    cout << "Initialize command recognized. Doing something.\n\n";
 }
 
-void createScreen (std::string &screenName){
-    std::time_t timestamp; //make a time_t variable
-    std::time(&timestamp); //gets the current time
 
+void createScreen (string &screenName){
+    system("CLS");
+    
     Screen newScreen; //initialize a new screen
     newScreen.screenName = screenName;
-    newScreen.totalInstruction = std::rand()%50+1; //placeholder total instructions
-    newScreen.curInstruction = std::rand()%(newScreen.totalInstruction-1)+1; //placeholder current instruction, guaranteed to be less than total instruction
+    newScreen.totalInstruction = rand()%50+1; //placeholder total instructions
+    newScreen.curInstruction = rand()%(newScreen.totalInstruction-1)+1; //placeholder currnet instruction, guaranteed to be less than total instruction
     
-    char buffer[30]; //array to store new time format
-    std::tm* timeinfo = std::localtime(&timestamp); 
-    std::strftime(buffer, sizeof(buffer), "%m/%d/%Y, %I:%M:%S %p", timeinfo); //changes time format
-    newScreen.timeCreated = buffer;
+    newScreen.timeCreated = getTimestamp();
 
-    screenList.emplace_back(newScreen);       //adds screen to vector for storage
+    screenList.emplace_back(newScreen);     //adds screen to vector for storage
+    curScreen = screenList.back(); //gets the most recently added screen for display
+    cout << "Current screen: " << curScreen.screenName << endl;
+    cout << "Running instruction: " << curScreen.curInstruction << " out of " << curScreen.totalInstruction << endl;
+    cout << "Time Created: " << curScreen.timeCreated << endl << endl;
 }
 
-void screen(std::string &screenCommand){
-    std::istringstream iss(screenCommand); //splits input separated by whitespaces
-    std::string screen, option, screenName;
+
+
+void displayScreens(){
+    //TODO: screen -ls
+
+    //displayResourceUsage()
+
+    cout << "----------------------" << endl;
+    cout << " Running Processes:   " << endl;
+    // for(auto& scr : screenList){
+    // process name, (timestamp when process started execution), core the process is assigned to, current instruction/total instruction
+    // }
+
+    cout << "Finished Processes: " << endl;
+    //if finisheprocess vector isnt empty
+    //lopp through the vector and display
+    //process name, (timestamp when process finished), "Finished", current instruction/total instruction
+    cout << "----------------------" << endl;
+}
+
+void screen(string &screenCommand){
+    istringstream iss(screenCommand); //splits input separated by whitespaces
+    string screen, option, screenName;
     iss >> screen >> option >> screenName; //stores each part of the input in its own variable
 
     if(option == "-s" && !screenName.empty()){
         createScreen(screenName);
-        clearScreen();
-        Screen& createdScreen = screenList.back(); //gets the most recently added screen for display
-        std::cout << "Current screen: " << createdScreen.screenName << std::endl;
-        std::cout << "Running instruction: " << createdScreen.curInstruction << " out of " << createdScreen.totalInstruction << std::endl;
-        std::cout << "Time Created: " << createdScreen.timeCreated << std::endl << std::endl;
     }
-    else if(option == "-r" && !screenName.empty()){
-        //TODO screen -r  
+
+    else if(option == "-r" && !screenName.empty()){ 
         bool found = false;
         for(auto& scr : screenList){
             if(scr.screenName == screenName){
-                clearScreen();
-                std::cout << "Screen: " << scr.screenName << std::endl;
-                std::cout << "Running instruction: " << scr.curInstruction << " out of " << scr.totalInstruction << std::endl;
-                std::cout << "Time Created: " << scr.timeCreated << std::endl << std::endl;
-                found = true;
-                break;
-            }
+            system("CLS");
+            curScreen = scr;
+            cout << "Screen: " << curScreen.screenName << endl;
+            cout << "Running instruction: " << curScreen.curInstruction << " out of " << curScreen.totalInstruction << endl;
+            cout << "Time Created: " << curScreen.timeCreated << endl << endl;
+            found = true;
+            break;
         }
-        if(!found){
-            std::cout << "Screen \"" << screenName << "\" not found." << std::endl << std::endl;
+        
+    }
+    if(!found){
+            cout << "Screen \"" << screenName << "\" not found." << endl << endl;
+            return;
         }
     }
 
-    std::string screenInput;
+    else if(option == "-ls"){
+        displayScreens();
+        return;
+    }
+
+
+    string screenInput;
 
     while(screenInput != "exit"){
-        std::cout << "Enter a command, or type exit to return to the main menu: ";
-        std::getline(std::cin, screenInput);
+        cout << "Enter a command, or type exit to return to the main menu: ";
+        getline(cin, screenInput);
         if(screenInput != "exit"){
-            std::cout << "Sorry, that command does not work right now. Only 'exit' works at the moment." << std::endl << std::endl;
+            cout << "Sorry, that command does not work right now. Only 'exit' works at the moment." << endl << endl;
         }
         else{
-            clearScreen();
+            system("CLS");
+            printASCII("ascii.txt");
         }
     }
 }
 
+
+
+// void roundrobin(){
+//  TODO: round robin scheduler
+// }
+
 void schedulertest(){
-    std::cout << "Scheduler-test command recognized. Doing something.\n\n";
+    cout << "Starting scheduler..." << endl;
+    FCFSScheduler fcfs(MAX_CORES);
+    std::thread schedulertest(&FCFSScheduler::runScheduler, &fcfs);
+    schedulertest.detach();
+    /*if(scheduler == "fcfs"){
+        std::thread scheduler(fcfs);
+        scheduler.detach(); (or join, im not sure)
+    }
+    else if(scheduler == "rr"){
+        roundrobin();
+    }
+    */
+    std::cout.flush();
 }
 
 void schedulerstop(){
-    std::cout << "Scheduler-stop command recognized. Doing something.\n\n";
+    cout << "Scheduler-stop command recognized. Doing something.\n\n";
 }
 
 void reportutil(){
-    std::cout << "Report-util command recognized. Doing something.\n\n";
+    cout << "Report-util command recognized. Doing something.\n\n";
 }
 
 void intro(){
-    std::string fileName = "ascii.txt";
-    printASCII(fileName);
+    string fileName = "ascii.txt";
+    
     setColor(10);
     std::cout << "Hello, Welcome to CSOPESY commandline!"<< std::endl;
     setColor(14);
@@ -144,37 +324,32 @@ void intro(){
 }
 
 void menu(){
-    std::string fileName = "ascii.txt";
-    std::string input;
-    bool initialized = false;
-
-    while (true){
+    string fileName = "ascii.txt";
+    string input;
+    printASCII(fileName);
+    while (isRunning){
         intro();
         setColor(7);
-        std::cout << "Enter a command: ";
-        std::string command;
-        std::getline(std::cin >> std::ws, command); //changed to getline to read input separated by whitespace
-
+        cout << "Enter a command: ";
+        string command;
+        getline(cin >> ws, command); //changed to getline to read input separated by whitespace
+         
         if(command == "exit"){
-            std::cout << "Thank you for using the program";
-            exit(0);
+            isRunning = false;
+            cout << "Thank you for using the program";
         }
         else if (command == "clear"){
-            clearScreen(); //clears the system
-            intro(); //reprints the main menu
+            system("CLS"); //clears the system
         }
         else if(command == "initialize"){
             initialize();
-            initialized = true;
-        }
-        else if (!initialized) {
-            std::cout << "Command is not recognized. Please initialize the system first by using the 'initialize' command.\n\n";
         }
         else if(command.rfind("screen",0) == 0){
             screen(command);
         }
         else if(command == "scheduler-test"){
-            schedulertest();
+            std::thread scheduler(schedulertest);
+            scheduler.detach();
         }
         else if(command == "scheduler-stop"){
             schedulerstop();
@@ -183,14 +358,14 @@ void menu(){
             reportutil();
         }
         else{
-            std::cout << "Unknown command. Please try again.\n\n";
+            cout << "Command not recognized, please try again." << endl;
         }
     }
+    std::cout.flush();    
 }
 
 int main(){
-    // Seed random number generator
-    std::srand(static_cast<unsigned int>(std::time(nullptr)));
-    menu();
+    std::thread mainMenu(menu);
+    mainMenu.join();
     return 0;
 }
