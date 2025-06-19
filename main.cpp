@@ -24,11 +24,6 @@ std::mutex mutx;
 
 bool isRunning = true;
 
-std::vector<Screen> screenList; //global vector for list of screens
-std::vector<Screen> finishedProcess;
-std::vector<std::thread> coreList;
-
-Screen curScreen;
 
 string getTimestamp(){
     time_t timestamp; //make a time_t variable
@@ -124,6 +119,10 @@ class Process{
     */
     
 };
+std::vector<Screen> screenList; //global vector for list of screens
+std::vector<Screen> finishedProcess;
+std::vector<std::thread> coreList;
+Screen curScreen;
 
 // FCFS scheduler template provided by Doc Neil's notes
 class FCFSScheduler {
