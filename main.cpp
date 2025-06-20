@@ -11,6 +11,7 @@
 #include <queue>
 #include <algorithm> // for sort
 #include <filesystem>
+#include <atomic>
 
 #define MAX_CORES 4
 #define MAX_SCREENS 10
@@ -22,7 +23,7 @@ using namespace std;
 std::mutex queueMutex;
 std::mutex mutx;  
 
-bool isRunning = true;
+std::atomic<bool> isRunning = true;
 
 
 string getTimestamp(){
@@ -122,24 +123,21 @@ class Process{
 std::vector<Screen> screenList; //global vector for list of screens
 std::vector<Screen> finishedProcess;
 std::vector<std::thread> coreList;
+std::queue<Process> processQueues; // ready queue for fcfs
 Screen curScreen;
 
 // FCFS scheduler template provided by Doc Neil's notes
 class FCFSScheduler {
     private:
         int numCores;
-        std::vector<std::vector<Process>> processQueues; // ready queue for fcfs
+        
 
     public:
         FCFSScheduler(int cores) : numCores(cores){}
 
     // Add a process to the scheduler
-    void addProcess(const Process& process, int core = MAX_CORES) {
-        if (core >= 0 && core < numCores) {
-            processQueues[core].push_back(process);
-        } else {
-            std::cerr << "Invalid core specified for process addition.\n";
-        }
+    void addProcess(const Process& process) {
+        processQueues.push(process);
     }
 
     // Sort the process queues based on remaining instructions (FCFS)
@@ -157,15 +155,15 @@ class FCFSScheduler {
             string processname = "screen_";
             if(i<10)
                 processname+="0";
-            processname+=i+1;
+            processname+=to_string(i+1);
             Process newProcess(processname, i, NUM_COMMANDS_PER_PROCESS);
             addProcess(newProcess);
         }
-        while (!processQueues[0].empty()) { // This condition likely needs refinement for multiple cores
+        while (!processQueues.empty()) { // This condition likely needs refinement for multiple cores
             for (int core = 0; core < numCores; ++core) {
-                if (!processQueues[core].empty()) {
-                    Process currentProcess = processQueues[core].back(); // Likely intended to be front() for FCFS
-                    processQueues[core].pop_back(); // Likely intended to be pop_front()
+                if (!processQueues.empty()) {
+                    Process currentProcess = processQueues.back(); // Likely intended to be front() for FCFS
+                    processQueues.push(currentProcess); // Likely intended to be pop_front()
 
                     while (!currentProcess.hasFinished()) {
                         currentProcess.executeInstruction();
@@ -230,7 +228,7 @@ void displayScreens(){
     //displayResourceUsage()
 
     cout << "----------------------" << endl;
-    cout << " Running Processes:   " << endl;
+    cout << "Running Processes:   " << endl;
     // for(auto& scr : screenList){
     // process name, (timestamp when process started execution), core the process is assigned to, current instruction/total instruction
     // }
