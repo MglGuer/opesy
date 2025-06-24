@@ -15,6 +15,7 @@
 #include <condition_variable>
 #include <memory>
 #include <bits/stdc++.h>
+#include <iomanip> 
 
 // Forward declarations
 class Process;
@@ -30,22 +31,49 @@ std::atomic<bool> schedulerRunning{false};
 std::atomic<int> processIdCounter{1};
 
 //FOR CONFIG.txt
-/*
-int num-cpu; //number of cores (between 1-128 inclusive)
-std::string scheduler; //scheduler type("fcfs" or "rr")
-int quantum-cycles; //for round robin, how many ticks before swapping (1-2^32 inclusive)
-int batch-process-freq; //1 process every x cycles (1-2^32 inclusive)
-int min-ins;
-int max-ins;
-int delay-per-exec; //1 instruction every x cycles (0 - 2^32 inclusive) if 0, it executes every cycle
-*/
+int numCPU; //number of cores (between 1-128 inclusive)
+std::string schedulerType; //scheduler type("fcfs" or "rr")
+int quantumCycles; //for round robin, how many ticks before swapping (1-2^32 inclusive)
+int batchProcessFreq; //1 process every x cycles (1-2^32 inclusive)
+int minIns;
+int maxIns;
+int delaysPerExec; //1 instruction every x cycles (0 - 2^32 inclusive) if 0, it executes every cycle
 
-/*TODO
+
+
 void readConfig(){
-read config.txt then assign the values to the global variables
+    std::ifstream file("config.txt");
+    std::string line;
 
+    while(std::getline(file, line)){
+        std::istringstream iss(line);
+        std::string key;
+        iss >> key;
+
+        if (key == "num-cpu") {
+            iss >> numCPU;
+        } 
+        else if (key == "scheduler") {
+            iss >> std::quoted(schedulerType);
+        } 
+        else if (key == "quantum-cycles") {
+            iss >> quantumCycles;
+        } 
+        else if (key == "batch-process-freq") {
+            iss >> batchProcessFreq;
+        } 
+        else if (key == "min-ins") {
+            iss >> minIns;
+        } 
+        else if (key == "max-ins") {
+            iss >> maxIns;
+        } 
+        else if (key == "delays-per-exec") {
+            iss >> delaysPerExec;
+        }
+
+    }
 }
-*/
 
 // Enhanced Process class
 class Process {
@@ -324,7 +352,18 @@ void clearScreen() {
 
 
 void initialize() {
+    readConfig();
+    std::cout << "-------------------------------------------------------------------------" << std::endl;
+    std::cout << "Number of Cores: " << numCPU << std::endl;
+    std::cout << "Scheduler Type: " << schedulerType << std::endl;
+    std::cout << "Quantum Cycles: " << quantumCycles << std::endl;
+    std::cout << "Batch Process Frequency: " << batchProcessFreq << std::endl;
+    std::cout << "Minimum Instructions: " << minIns << std::endl;
+    std::cout << "Maximum Instructions: " << maxIns << std::endl;
+    std::cout << "Delay per Execution: " << delaysPerExec << std::endl;
+    std::cout << "-------------------------------------------------------------------------" << std::endl;
     std::cout << "System Initialized. You may now create screens and perform other actions.\n\n";
+    
 }
 
 void createScreen(std::string &screenName) {
@@ -506,7 +545,6 @@ void reportUtil() {
 void menu() {
     std::string input;
     bool initialized = false;
-
     intro();
     while (true) {
         
