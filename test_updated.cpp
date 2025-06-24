@@ -29,6 +29,24 @@ std::mutex processMutex;
 std::atomic<bool> schedulerRunning{false};
 std::atomic<int> processIdCounter{1};
 
+//FOR CONFIG.txt
+/*
+int num-cpu; //number of cores (between 1-128 inclusive)
+std::string scheduler; //scheduler type("fcfs" or "rr")
+int quantum-cycles; //for round robin, how many ticks before swapping (1-2^32 inclusive)
+int batch-process-freq; //1 process every x cycles (1-2^32 inclusive)
+int min-ins;
+int max-ins;
+int delay-per-exec; //1 instruction every x cycles (0 - 2^32 inclusive) if 0, it executes every cycle
+*/
+
+/*TODO
+void readConfig(){
+read config.txt then assign the values to the global variables
+
+}
+*/
+
 // Enhanced Process class
 class Process {
 private:
@@ -58,7 +76,7 @@ public:
         std::strftime(buffer, sizeof(buffer), "%m/%d/%Y %I:%M:%S%p", timeinfo);
         timeCreated = buffer;
         
-        // Create log file
+        // Create log file TODO: remove creation of log files
         std::string filename = processName + "_log.txt";
         logFile = std::make_unique<std::ofstream>(filename);
         if (logFile && logFile->is_open()) {
@@ -117,7 +135,7 @@ public:
             char buffer[30];
             std::tm* timeinfo = std::localtime(&timestamp);
             std::strftime(buffer, sizeof(buffer), "%m/%d/%Y %I:%M:%S%p", timeinfo);
-            
+            //TODO: Remove writing to .txt file, instead execute the instruction on console(?)
             if (logFile && logFile->is_open()) {
                 *logFile << "(" << buffer << ") Core:" << coreId 
                         << " \"Hello world from " << name << "!\"" << std::endl;
@@ -290,7 +308,10 @@ public:
     bool isRunning() const { return running; }
 };
 
-
+//TODO: Round Robin
+class RoundRobinScheduler{
+// maybe copy paste FCFS then just modify to include quantum cycles
+};
 
 void clearScreen() {
     #ifdef _WIN32
@@ -312,7 +333,7 @@ void createScreen(std::string &screenName) {
 
     Screen newScreen;
     newScreen.screenName = screenName;
-    newScreen.totalInstruction = 100; // Fixed to 100 instructions
+    newScreen.totalInstruction = 100; // TODO: random number between min-ins and max-ins (inclusive)
     newScreen.curInstruction = 0;
     
     char buffer[30];
@@ -434,15 +455,16 @@ void screen(std::string &screenCommand) {
             }
         }
     }
+    //TODO: process-smi, aka screen -ls but for a single process only
 }
 
 void schedulerStart() {
     if (scheduler == nullptr) {
-        scheduler = new FCFSScheduler(4); // 4 cores
+        scheduler = new FCFSScheduler(4); // TODO: replace 4 with num-cpu
     }
     
     if (!scheduler->isRunning()) {
-        // Create 10 test processes first
+        // TODO: change the loop to go infinitely until user inputs "scheduler-stop"
         std::cout << "Creating 10 test processes..." << std::endl;
         for (int i = 1; i <= 10; i++) {
             std::string processName = "process_";
@@ -475,12 +497,9 @@ void schedulerStop() {
     }
 }
 
-void schedulerTest() {
-    std::cout << "Scheduler-test command recognized. Doing something.\n\n";
-}
-
 void reportUtil() {
     std::cout << "Report-util command recognized. Doing something.\n\n";
+    //TODO: screen -ls but put into a .txt file
 }
 
 
@@ -523,9 +542,6 @@ void menu() {
         }
         else if(command == "scheduler-stop") {
             schedulerStop();
-        }
-        else if(command == "scheduler-test") {
-            schedulerTest();
         }
         else if(command == "report-util") {
             reportUtil();
