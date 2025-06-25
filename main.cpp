@@ -19,19 +19,20 @@
 
 // Forward declarations
 class Process;
+class Scheduler;
 class FCFSScheduler;
+class RoundRobinScheduler;
 
 
 // Global variables
 std::vector<std::unique_ptr<Process>> allProcesses;
 std::vector<Process*> runningProcesses;
 std::vector<Process*> finishedProcesses;
-FCFSScheduler* scheduler = nullptr;
+Scheduler* scheduler = nullptr;
 std::mutex processMutex;
 std::atomic<bool> schedulerRunning{false};
 std::atomic<int> processIdCounter{1};
 std::atomic<long long> global_simulated_cycles{0}; // Global variable to track simulated cycles
-std::
 
 
 
@@ -170,7 +171,7 @@ public:
 
             std::ostringstream oss; 
             oss << "(" << buffer << ") Core:" << coreId << " \"Hello world from " << name << "!\"";
-            logs.push_back(oss.str())
+            logs.push_back(oss.str());
 
             
             // Simulate instruction execution time (reduced for faster testing)
@@ -245,11 +246,20 @@ void intro() {
     std::cout << "Type 'exit' to quit, 'clear' to clear the screen." << std::endl;
 }
 
+// Abstract Scheduler base class
+class Scheduler {
+public:
+    virtual ~Scheduler() = default;
+    virtual void addProcess(Process* process) = 0;
+    virtual void start() = 0;
+    virtual void stop() = 0;
+    virtual bool isRunning() const = 0;
+};
 
 // FCFS Scheduler class
-class FCFSScheduler {
+class FCFSScheduler : public Scheduler {
 private:
-    int numCores = numCPU; // Number of cores
+    int numCores; //Number of cores
     std::vector<std::thread> coreThreads;
     std::queue<Process*> processQueue;
     std::mutex queueMutex;
@@ -257,22 +267,22 @@ private:
     std::atomic<bool> running{false};
 
 public:
-    FCFSScheduler(int cores) : numCores(cores)/*, currentProcess(nullptr)*/ {}
+    FCFSScheduler(int cores) : numCores(cores) {}
     
     ~FCFSScheduler() {
         stop();
     }
     
-    void addProcess(Process* process) {
+    void addProcess(Process* process) override {
         std::lock_guard<std::mutex> lock(queueMutex);
         processQueue.push(process);
         queueCV.notify_all();
     }
     
-    void start() {
+    void start() override {
         running = true;
         schedulerRunning = true;
-        
+
         // Create threads for each core
         for (int i = 0; i < numCores; i++) {
             coreThreads.emplace_back([this, i]() {
@@ -283,7 +293,7 @@ public:
         std::cout << "Scheduler started with " << numCores << " cores." << std::endl << std::endl;
     }
     
-    void stop() {
+    void stop() override {
 
         running = false;
         schedulerRunning = false;
@@ -338,12 +348,100 @@ public:
         }
     }   
     
-    bool isRunning() const { return running; }
+    bool isRunning() const override { return running; }
 };
 
 //TODO: Round Robin
-class RoundRobinScheduler{
-// maybe copy paste FCFS then just modify to include quantum cycles
+class RoundRobinScheduler : public Scheduler {
+private:
+    int numCores;
+    int quantum;
+    std::vector<std::thread> coreThreads;
+    std::queue<Process*> processQueue;
+    std::mutex queueMutex;
+    std::condition_variable queueCV;
+    std::atomic<bool> running{false};
+
+public:
+    RoundRobinScheduler(int cores, int quantumCycles) : numCores(cores), quantum(quantumCycles) {}
+
+    ~RoundRobinScheduler() {
+        stop();
+    }
+
+    void addProcess(Process* process) override {
+        {
+            std::lock_guard<std::mutex> lock(queueMutex);
+            processQueue.push(process);
+        }
+        queueCV.notify_one();
+    }
+
+    void start() override {
+        running = true;
+        schedulerRunning = true;
+
+        for (int i = 0; i < numCores; ++i) {
+            coreThreads.emplace_back([this, i]() {
+                this->coreWorker(i);
+            });
+        }
+        std::cout << "Round Robin Scheduler started with " << numCores << " cores and quantum of " << quantum << " cycles." << std::endl << std::endl;
+    }
+
+    void stop() override {
+        running = false;
+        schedulerRunning = false;
+        queueCV.notify_all();
+
+        for (auto& thread : coreThreads) {
+            if (thread.joinable()) {
+                thread.join();
+            }
+        }
+        coreThreads.clear();
+        std::cout << "Scheduler stopped." << std::endl;
+    }
+
+    void coreWorker(int coreId) {
+        while (running) {
+            Process* processToExecute = nullptr;
+
+            {
+                std::unique_lock<std::mutex> lock(queueMutex);
+                queueCV.wait(lock, [this] { return !processQueue.empty() || !running; });
+
+                if (!running) return;
+
+                processToExecute = processQueue.front();
+                processQueue.pop();
+            }
+
+            {
+                std::lock_guard<std::mutex> pLock(processMutex);
+                if (std::find(runningProcesses.begin(), runningProcesses.end(), processToExecute) == runningProcesses.end()) {
+                    runningProcesses.push_back(processToExecute);
+                }
+            }
+
+            processToExecute->setAssignedCore(coreId);
+
+            for (int i = 0; i < quantum && processToExecute->canExecute() && running; ++i) {
+                processToExecute->executeInstruction(coreId);
+            }
+
+            if (processToExecute->hasFinished()) {
+                std::lock_guard<std::mutex> pLock(processMutex);
+                runningProcesses.erase(std::remove(runningProcesses.begin(), runningProcesses.end(), processToExecute), runningProcesses.end());
+                finishedProcesses.push_back(processToExecute);
+            } else if (running) {
+                // If process is not finished, add it back to the queue
+                addProcess(processToExecute);
+            }
+        }
+    }
+
+    bool isRunning() const override { return running; }
 };
 
 void clearScreen() {
@@ -379,7 +477,8 @@ void createScreen(std::string &screenName) {
 
     Screen newScreen;
     newScreen.screenName = screenName;
-    newScreen.totalInstruction = 100; // TODO: random number between min-ins and max-ins (inclusive)
+    int instructionCount = minIns + (std::rand() % (maxIns - minIns + 1));
+    newScreen.totalInstruction = instructionCount;
     newScreen.curInstruction = 0;
     
     char buffer[30];
@@ -391,7 +490,7 @@ void createScreen(std::string &screenName) {
     screenList.emplace_back(newScreen);
     curScreen = newScreen;
     // Create corresponding process using unique_ptr
-    auto newProcess = std::make_unique<Process>(screenName, 100);
+    auto newProcess = std::make_unique<Process>(screenName, instructionCount);
     allProcesses.push_back(std::move(newProcess));
 }
 
@@ -519,21 +618,49 @@ void screen(std::string &screenCommand) {
 }
 
 void schedulerStart() {
-    std::cout << "Scheduler started. Creating processes indefinitely...\n"<< "Type 'scheduler-stop' to halt process generation.\n\n";
-    for (int i = 0; i < 5; ++i) { // TODO: Change to infinite loop, interruptible by 'scheduler-stop'
-        std::string baseName = "autogen-process-";
-        std::string uniqueScreenName = baseName + std::to_string(i + 1); // Appends 1, 2, 3, etc.
-        createScreen(uniqueScreenName);
+    if (scheduler == nullptr) {
+        if (schedulerType == "fcfs") {
+            scheduler = new FCFSScheduler(numCPU);
+        } else if (schedulerType == "rr") {
+            scheduler = new RoundRobinScheduler(numCPU, quantumCycles);
+        } else {
+            std::cout << "Error: Unknown scheduler type '" << schedulerType << "' in config.txt. Aborting." << std::endl;
+            return;
+        }
     }
-    std::cout << "Process generation ceased.\n\n";
+    
+    if (!scheduler->isRunning()) {
+        // TODO: change the loop to go infinitely until user inputs "scheduler-stop"
+        std::cout << "Creating 10 test processes..." << std::endl;
+        for (int i = 1; i <= 10; i++) {
+            std::string processName = "process_";
+            if(i<10)
+                processName +="0";
+            processName += std::to_string(i);
+            createScreen(processName);
+        }
+        
+        // Start scheduler
+        scheduler->start();
+        
+        // Add all processes to scheduler
+        std::cout << "Adding processes to scheduler..." << std::endl;
+        for (size_t i = allProcesses.size() - 10; i < allProcesses.size(); i++) {
+            scheduler->addProcess(allProcesses[i].get());
+        }
+        
+        std::cout << "All processes added to scheduler. They will run in the background." << std::endl << std::endl;
+    } else {
+        std::cout << "Scheduler is already running." << std::endl << std::endl;
+    }
 } 
 
 void schedulerStop() {
-    // if (scheduler && scheduler->isRunning()) {
-    //     scheduler->stop();
-    // } else {
-    //     std::cout << "Scheduler is not running." << std::endl << std::endl;
-    // }
+    if (scheduler != nullptr && scheduler->isRunning()) {
+        scheduler->stop();
+    } else {
+        std::cout << "Scheduler is not running." << std::endl << std::endl;
+    }
 }
 
 void reportUtil() {
@@ -583,7 +710,7 @@ void menu() {
         std::getline(std::cin >> std::ws, command);
 
         if(command == "exit") {
-            if (scheduler) {
+            if (scheduler != nullptr) {
                 scheduler->stop();
                 delete scheduler;
             }
