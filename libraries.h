@@ -1,15 +1,21 @@
 #pragma once
 
 #include <iostream>
+#include <fstream>
 #include <string>
 #include <vector>
-#include <fstream>
 #include <sstream>
-#include <map>
-#include <stack>
-#include <random>
-#include <algorithm>
-#include <stdlib.h>
 #include <ctime>
-#include <climits>
+#include <cstdlib>
+#include <algorithm>
+#include <iomanip>
+#include <thread>
+#include <mutex>
+#include <chrono>
+#include <queue>
+#include <atomic>
+#include <condition_variable>
+#include <memory>
+#include <bits/stdc++.h>
+#include <iomanip> 
 
