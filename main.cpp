@@ -33,8 +33,8 @@ std::mutex processMutex;
 std::atomic<bool> schedulerRunning{false};
 std::atomic<int> processIdCounter{1};
 std::atomic<long long> global_simulated_cycles{0}; // Global variable to track simulated cycles
-std::atomic<bool> processCreationRunning{false}; // 
-
+std::atomic<bool> processCreationRunning{false}; /
+std::atomic<int> autoProcessCounter{0}; //for tracking auto-generated screen names
 
 //FOR CONFIG.txt
 int numCPU; //number of cores (between 1-128 inclusive)
@@ -626,10 +626,10 @@ void screen(std::string &screenCommand) {
 }
 
 void processCreationLoop() {
-    int i = 0;
+    static int i = 0; // persists across function calls
     long long lastCycle = global_simulated_cycles;
     while (processCreationRunning) {
-        //One process every batchProcessFreq cycles
+        //one process every batchProcessFreq cycles
         if (global_simulated_cycles - lastCycle >= batchProcessFreq) {
             std::string processName = "process_0" + std::to_string(i++);
             createScreen(processName);
