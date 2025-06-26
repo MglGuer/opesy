@@ -82,7 +82,7 @@ void readConfig(){
     }
 }
 
-// Enhanced Process class
+// Process class
 class Process {
 private:
     std::string name;
@@ -197,6 +197,14 @@ public:
     void setAssignedCore(int core) { assignedCore = core; }
     const std::vector<std::string>& getLogs() const { return logs; }
 };
+
+void cpuCycleLoop() {
+    while (schedulerRunning) {
+        global_simulated_cycles++;
+        // Simulate a CPU cycle (adjust as needed)
+        std::this_thread::sleep_for(std::chrono::microseconds(100));
+    }
+}
 
 // Enhanced Screen class
 class Screen {
@@ -619,10 +627,14 @@ void screen(std::string &screenCommand) {
 
 void processCreationLoop() {
     int i = 0;
+    long long lastCycle = global_simulated_cycles;
     while (processCreationRunning) {
-        std::string processName = "process_0" + std::to_string(i++);
-        createScreen(processName);
-        std::this_thread::sleep_for(std::chrono::milliseconds(100)); // Slow down for demo
+        //One process every batchProcessFreq cycles
+        if (global_simulated_cycles - lastCycle >= batchProcessFreq) {
+            std::string processName = "process_0" + std::to_string(i++);
+            createScreen(processName);
+            lastCycle = global_simulated_cycles;
+        }
     }
 }
 
@@ -641,7 +653,9 @@ void schedulerStart() {
     if (!scheduler->isRunning()) {
         std::cout << "Creating processes. Enter \"scheduler-stop\" to cease." << std::endl;
         processCreationRunning = true;
-        std::thread(processCreationLoop).detach(); // Start process creation in background
+        schedulerRunning = true;
+        std::thread(cpuCycleLoop).detach();         // Start CPU cycle simulation
+        std::thread(processCreationLoop).detach();  // Start process creation in background
         scheduler->start();
     } else {
         std::cout << "Scheduler is already running." << std::endl << std::endl;
@@ -650,6 +664,7 @@ void schedulerStart() {
 
 void schedulerStop() {
     processCreationRunning = false; // Signal process creation thread to stop
+    schedulerRunning = false;       // Signal CPU cycle thread to stop
     if (scheduler != nullptr && scheduler->isRunning()) {
         scheduler->stop();
         std::cout << "Total screens/processes created: " << screenList.size() << std::endl;
