@@ -33,7 +33,7 @@ std::mutex processMutex;
 std::atomic<bool> schedulerRunning{false};
 std::atomic<int> processIdCounter{1};
 std::atomic<long long> global_simulated_cycles{0}; // Global variable to track simulated cycles
-
+std::atomic<bool> processCreationRunning{false}; // 
 
 
 //FOR CONFIG.txt
@@ -234,12 +234,12 @@ void printASCII(std::string fileName) {
         std::cout << "File failed to load. " << std::endl;
     }
     inFile.close();
-}
+} 
 
 // ASCII CSOPESY
 void intro() {
     std::string fileName = "ascii.txt";
-    printASCII(fileName);
+    //printASCII(fileName); TODO: uncomment when done debugging.
     setColor(10);
     std::cout << "Hello, Welcome to CSOPESY commandline!" << std::endl;
     setColor(14);
@@ -617,6 +617,15 @@ void screen(std::string &screenCommand) {
 
 }
 
+void processCreationLoop() {
+    int i = 0;
+    while (processCreationRunning) {
+        std::string processName = "process_0" + std::to_string(i++);
+        createScreen(processName);
+        std::this_thread::sleep_for(std::chrono::milliseconds(100)); // Slow down for demo
+    }
+}
+
 void schedulerStart() {
     if (scheduler == nullptr) {
         if (schedulerType == "fcfs") {
@@ -628,36 +637,22 @@ void schedulerStart() {
             return;
         }
     }
-    
+
     if (!scheduler->isRunning()) {
-        // TODO: change the loop to go infinitely until user inputs "scheduler-stop"
-        std::cout << "Creating 10 test processes..." << std::endl;
-        for (int i = 1; i <= 10; i++) {
-            std::string processName = "process_";
-            if(i<10)
-                processName +="0";
-            processName += std::to_string(i);
-            createScreen(processName);
-        }
-        
-        // Start scheduler
+        std::cout << "Creating processes. Enter \"scheduler-stop\" to cease." << std::endl;
+        processCreationRunning = true;
+        std::thread(processCreationLoop).detach(); // Start process creation in background
         scheduler->start();
-        
-        // Add all processes to scheduler
-        std::cout << "Adding processes to scheduler..." << std::endl;
-        for (size_t i = allProcesses.size() - 10; i < allProcesses.size(); i++) {
-            scheduler->addProcess(allProcesses[i].get());
-        }
-        
-        std::cout << "All processes added to scheduler. They will run in the background." << std::endl << std::endl;
     } else {
         std::cout << "Scheduler is already running." << std::endl << std::endl;
     }
-} 
+}
 
 void schedulerStop() {
+    processCreationRunning = false; // Signal process creation thread to stop
     if (scheduler != nullptr && scheduler->isRunning()) {
         scheduler->stop();
+        std::cout << "Total screens/processes created: " << screenList.size() << std::endl;
     } else {
         std::cout << "Scheduler is not running." << std::endl << std::endl;
     }
