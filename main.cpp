@@ -33,7 +33,7 @@ std::mutex processMutex;
 std::atomic<bool> schedulerRunning{false};
 std::atomic<int> processIdCounter{1};
 std::atomic<long long> global_simulated_cycles{0}; // Global variable to track simulated cycles
-std::atomic<bool> processCreationRunning{false}; /
+std::atomic<bool> processCreationRunning{false}; 
 std::atomic<int> autoProcessCounter{0}; //for tracking auto-generated screen names
 
 //FOR CONFIG.txt
