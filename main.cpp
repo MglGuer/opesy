@@ -45,8 +45,15 @@ int minIns;
 int maxIns;
 int delaysPerExec; //1 instruction every x cycles (0 - 2^32 inclusive) if 0, it executes every cycle
 
-
-
+//Instruction Types
+enum class InstructionType {
+    PRINT,
+    ADD,
+    DECLARE,
+    SUBTRACT,
+    SLEEP,
+    FOR
+};
 
 void readConfig(){
     std::ifstream file("config.txt");
@@ -68,7 +75,7 @@ void readConfig(){
         } 
         else if (key == "batch-process-freq") {
             iss >> batchProcessFreq;
-        } 
+        }
         else if (key == "min-ins") {
             iss >> minIns;
         } 
