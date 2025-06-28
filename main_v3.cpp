@@ -228,55 +228,73 @@ public:
     // for instructions not sureee
     void generateRandomInstructions(int numInstructions, int depth = 0) {
         instructions.clear();
+
+        const uint16_t MAX_UINT16_VAL = 65535;
+        const uint8_t MAX_SLEEP_TICKS = 25;
+        const int MAX_NESTING_DEPTH = 3;
+        const int NUM_VAR_NAMES = 15;
+
         for (int i = 0; i < numInstructions; ++i) {
             Instruction instr;
             int instrType = std::rand() % 6;
+
+            if (depth >= MAX_NESTING_DEPTH && instrType == 5) {
+                instrType = 0;
+            }
+
             switch (instrType) {
                 case 0: // PRINT
                     instr.type = InstructionType::PRINT;
-                    instr.args.push_back("\"Hello world from " + name + "!\"");
+                    if (std::rand() % 3 == 0) {
+                        std::string varToPrint = "var" + std::to_string(std::rand() % NUM_VAR_NAMES);
+                        instr.args.push_back("\"Value of " + varToPrint + ": \"+" + varToPrint);
+                    } else {
+                        instr.args.push_back("\"Hello world from " + name + "!\"");
+                    }
                     break;
                 case 1: // DECLARE
                     instr.type = InstructionType::DECLARE;
-                    instr.args.push_back("var" + std::to_string(std::rand() % 10));
-                    instr.args.push_back(std::to_string(std::rand() % 100));
+                    instr.args.push_back("var" + std::to_string(std::rand() % NUM_VAR_NAMES));
+                    instr.args.push_back(std::to_string(std::rand() % (MAX_UINT16_VAL + 1)));
                     break;
                 case 2: // ADD
                     instr.type = InstructionType::ADD;
-                    instr.args.push_back("var" + std::to_string(std::rand() % 10));
-                    instr.args.push_back("var" + std::to_string(std::rand() % 10));
-                    instr.args.push_back(std::to_string(std::rand() % 50));
+                    instr.args.push_back("var" + std::to_string(std::rand() % NUM_VAR_NAMES));
+                    instr.args.push_back("var" + std::to_string(std::rand() % NUM_VAR_NAMES));
+                    if (std::rand() % 2 == 0) {
+                        instr.args.push_back(std::to_string(std::rand() % (MAX_UINT16_VAL + 1)));
+                    } else {
+                        instr.args.push_back("var" + std::to_string(std::rand() % NUM_VAR_NAMES));
+                    }
                     break;
                 case 3: // SUBTRACT
                     instr.type = InstructionType::SUBTRACT;
-                    instr.args.push_back("var" + std::to_string(std::rand() % 10));
-                    instr.args.push_back("var" + std::to_string(std::rand() % 10));
-                    instr.args.push_back(std::to_string(std::rand() % 50));
+                    instr.args.push_back("var" + std::to_string(std::rand() % NUM_VAR_NAMES));
+                    instr.args.push_back("var" + std::to_string(std::rand() % NUM_VAR_NAMES));
+                    if (std::rand() % 2 == 0) {
+                        instr.args.push_back(std::to_string(std::rand() % (MAX_UINT16_VAL + 1)));
+                    } else {
+                        instr.args.push_back("var" + std::to_string(std::rand() % NUM_VAR_NAMES));
+                    }
                     break;
                 case 4: // SLEEP
                     instr.type = InstructionType::SLEEP;
-                    instr.args.push_back(std::to_string(std::rand() % 10 + 1)); // Sleep for 1-10 ticks
+                    instr.args.push_back(std::to_string(std::rand() % (MAX_SLEEP_TICKS + 1)));
                     break;
                 case 5: // FOR
-                    if (depth < 3) { // Nest up to 3 times
-                        instr.type = InstructionType::FOR;
-                        int repeats = std::rand() % 5 + 1;
-                        instr.args.push_back(std::to_string(repeats));
-                        int nestedInstructionCount = std::rand() % 3 + 1;
-                        for(int j=0; j < nestedInstructionCount; ++j) {
-                            // Simplified nested instruction generation
-                            Instruction nested;
-                            nested.type = InstructionType::PRINT;
-                            nested.args.push_back("\"Nested loop says hi!\"");
-                            instr.nestedInstructions.push_back(nested);
-                        }
-                    } else { // Fallback to PRINT if too deep
-                        instr.type = InstructionType::PRINT;
-                        instr.args.push_back("\"Max nesting reached!\"");
+                    instr.type = InstructionType::FOR;
+                    int repeats = std::rand() % 5 + 2; // Loop 2 to 6 times
+                    instr.args.push_back(std::to_string(repeats));
+                    
+                    int nestedInstructionCount = std::rand() % 3 + 1; // 1 to 3 nested instructions
+                    for(int j = 0; j < nestedInstructionCount; ++j) {
+                        Process tempProc("nested_gen");
+                        tempProc.generateRandomInstructions(1, depth + 1);
+                        instr.nestedInstructions.push_back(std::move(tempProc.instructions[0]));
                     }
                     break;
             }
-            instructions.push_back(instr);
+            instructions.push_back(std::move(instr));
         }
         totalInstructions = instructions.size();
         remainingInstructions = instructions.size();
@@ -523,8 +541,6 @@ public:
             }
         }
         coreThreads.clear();
-        
-        std::cout << "Scheduler stopped." << std::endl;
     }
 
     void coreWorker(int coreId) {
@@ -619,7 +635,6 @@ public:
             }
         }
         coreThreads.clear();
-        std::cout << "Scheduler stopped." << std::endl;
     }
 
     void coreWorker(int coreId) {
@@ -881,7 +896,7 @@ void screen(std::string &screenCommand) {
         if (found) {
             std::string screenInput;
             while(screenInput != "exit") {
-                std::cout << "root:\\> ";
+                std::cout << "\nroot:\\> ";
                 std::getline(std::cin, screenInput);
                 if(screenInput == "process-smi") {
                     auto it = std::find_if(allProcesses.begin(), allProcesses.end(),
@@ -1040,7 +1055,6 @@ void schedulerStop() {
             runningProcesses.clear();
         }
         
-        std::cout << "Scheduler stopped." << std::endl;
         std::cout << "Total screens/processes created: " << screenList.size() << std::endl;
     } else {
         std::cout << "Scheduler is not running." << std::endl;
@@ -1106,7 +1120,7 @@ void menu() {
     while (true) {
         
         setColor(7);
-        std::cout << "root:\\> ";
+        std::cout << "\nroot:\\> ";
         std::string command;
         std::getline(std::cin >> std::ws, command);
 
