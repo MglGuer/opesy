@@ -461,9 +461,16 @@ void intro() {
     setColor(7);
     std::cout << "\nDevelopers:\n";
     std::cout << "Dimaculangan, Renzel\n"
-              << "Guerrero, Miguel\n"
-              << "Valdez, Kimi\n"
-              << "Velasquez, Almira Zabrina Alyson\n\n";
+            << "Guerrero, Miguel\n"
+        << "Valdez, Kimi\n"
+    << "Velasquez, Almira Zabrina Alyson\n\n";
+
+    setColor(7);
+    std::cout << "Last updated: ";
+    setColor(14);
+    std::cout << "28/06/2025" << std::endl;
+    setColor(7);
+    std::cout << "-------------------------------------------------------------------------" << std::endl;
 }
 
 // Abstract Scheduler base class
@@ -619,7 +626,6 @@ public:
             }
         }
         coreThreads.clear();
-        std::cout << "Scheduler stopped." << std::endl;
     }
 
     void coreWorker(int coreId) {
@@ -772,7 +778,6 @@ void manualProcessesScheduler() {
 void screenLS() {
     std::lock_guard<std::mutex> lock(processMutex);
     
-    // Calculate CPU utilization
     std::set<int> usedCores;
     for (const auto& process : runningProcesses) {
         if (process->getAssignedCore() != -1) {
@@ -784,26 +789,60 @@ void screenLS() {
     int coresAvailable = numCPU - coresUsed;
     double cpuUtilization = (numCPU > 0) ? (static_cast<double>(coresUsed) / numCPU * 100.0) : 0.0;
     
-    std::cout << "CPU utilization: " << std::fixed << std::setprecision(2) << cpuUtilization << "%\n";
-    std::cout << "Cores used: " << coresUsed << "\n";
-    std::cout << "Cores available: " << coresAvailable << "\n";
-    
+    setColor(7);
+    std::cout << "CPU utilization: ";
+    setColor(14);
+    std::cout << std::fixed << std::setprecision(2) << cpuUtilization << "%\n";
+
+    setColor(7);
+    std::cout << "Cores used: ";
+    setColor(14);
+    std::cout << coresUsed << "\n";
+
+    setColor(7);
+    std::cout << "Cores available: ";
+    setColor(14);
+    std::cout << coresAvailable << "\n";
+
+    setColor(7);
     std::cout << "================\n";
     std::cout << "Running processes:\n";
     
     for (const auto& process : runningProcesses) {
-        std::cout << process->getName() << " (" << process->getTimeCreated() << ")  "
-                << "Core: " << process->getAssignedCore() << "  "
-            << process->getCurrentInstruction() << "  /  " << process->getTotalInstructions() << std::endl;
+        setColor(7);
+        std::cout << process->getName() << " (";
+        setColor(14);
+        std::cout << process->getTimeCreated();
+        setColor(7);
+        std::cout << ")  Core: ";
+        setColor(14);
+        std::cout << process->getAssignedCore();
+        setColor(7);
+        std::cout << "  ";
+        setColor(14);
+        std::cout << process->getCurrentInstruction();
+        setColor(7);
+        std::cout << " / ";
+        setColor(14);
+        std::cout << process->getTotalInstructions() << std::endl;
     }
+
+    setColor(7);
     std::cout << "\n\n------------------\n\n";
-    
     std::cout << "\nFinished processes:\n";
+
     for (const auto& process : finishedProcesses) {
-        std::cout << process->getName() << "  (" << process->getTimeCreated() << ")  "
-                << "Finished " << process->getTotalInstructions() << "  /  " << process->getTotalInstructions() << std::endl;
+        setColor(7);
+        std::cout << process->getName() << "  (";
+        setColor(14);
+        std::cout << process->getTimeCreated();
+        setColor(7);
+        std::cout << ")  Finished ";
+        setColor(14);
+        std::cout << process->getTotalInstructions() << " / " << process->getTotalInstructions() << std::endl;
     }
-    
+
+    setColor(7);
     std::cout << "================\n\n";
 }
 
@@ -842,25 +881,53 @@ void screen(std::string &screenCommand) {
                     [&](const std::unique_ptr<Process>& p) { return p->getName() == newProcess->getName(); });
 
                 if (it != allProcesses.end()) {
-                    process = it->get();
-                    std::cout << "\nProcess name: " << process->getName();
+            process = it->get();
 
-                    if (process->hasFinished()) {
-                        std::cout << " Finished!" << std::endl;
-                    } else {
-                        std::cout << std::endl;
-                    }
+            setColor(7);
+            std::cout << "\nProcess name: " << process->getName();
 
-                    std::cout << "ID: " << process->getId() << std::endl;
-                    std::cout << "Logs:" << std::endl;
-                    for (const auto& logEntry : process->getLogs()) {
-                        if (logEntry.find("Value of") != std::string::npos || logEntry.find("Hello world from") != std::string::npos) {
-                            std::cout << logEntry << std::endl;
-                        }
-                    }
-                    std::cout << "\nCurrent instruction line: " << process->getCurrentInstruction() << std::endl;
-                    std::cout << "Lines of code: " << process->getTotalInstructions() << "\n";
+            if (process->hasFinished()) {
+            std::cout << " Finished!" << std::endl;
+                } else {
+                    std::cout << std::endl;
                 }
+
+                setColor(7);
+                std::cout << "ID: ";
+                setColor(14);
+                std::cout << process->getId() << std::endl;
+
+                setColor(7);
+                std::cout << "Time Created: ";
+                setColor(14);
+                std::cout << process->getTimeCreated() << std::endl;
+
+                setColor(7);
+                std::cout << "Assigned Core: ";
+                setColor(14);
+                std::cout << process->getAssignedCore() << std::endl;
+
+                setColor(7);
+                std::cout << "Logs:" << std::endl;
+                for (const auto& logEntry : process->getLogs()) {
+                    if (logEntry.find("Value of") != std::string::npos || logEntry.find("Hello world from") != std::string::npos) {
+                        std::cout << logEntry << std::endl;
+                    }
+                }
+
+                
+                setColor(7);
+                std::cout << "\nCurrent instruction line: ";
+                setColor(14);
+                std::cout << process->getCurrentInstruction() << std::endl;
+
+                setColor(7);
+                std::cout << "Lines of code: ";
+                setColor(14);
+                std::cout << process->getTotalInstructions() << "\n";
+
+                setColor(7);
+            }
 
             } else if (screenInput == "exit") {
                 clearScreen();
@@ -915,7 +982,7 @@ void screen(std::string &screenCommand) {
         if (found) {
             std::string screenInput;
             while(screenInput != "exit") {
-                std::cout << "root:\\> ";
+                std::cout << "\nroot:\\> ";
                 std::getline(std::cin, screenInput);
                 if(screenInput == "process-smi") {
                     auto it = std::find_if(allProcesses.begin(), allProcesses.end(),
@@ -1137,7 +1204,7 @@ void menu() {
     while (true) {
         
         setColor(7);
-        std::cout << "root:\\> ";
+        std::cout << "\nroot:\\> ";
         std::string command;
         std::getline(std::cin >> std::ws, command);
 
