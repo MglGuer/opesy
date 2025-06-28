@@ -17,6 +17,8 @@
 #include <bits/stdc++.h>
 #include <iomanip> 
 #include <list>
+#include <map>
+#include <cstdint>
 
 // Forward declarations
 class Process;
@@ -55,6 +57,12 @@ enum class InstructionType {
     SUBTRACT,
     SLEEP,
     FOR
+};
+
+struct Instruction {
+    InstructionType type;
+    std::vector<std::string> args;
+    std::vector<Instruction> nestedInstructions;
 };
 
 void readConfig(){
@@ -105,7 +113,13 @@ private:
     std::mutex processExecutionMutex; // Mutex to protect process execution
     std::vector<std::string> logs; // Store execution logs
     std::atomic<int> cyclesSinceLastExec{0}; // For delays-per-exec implementation
-    
+    std::vector<Instruction> instructions;
+    std::map<std::string, uint16_t> variables;
+    std::atomic<uint64_t> sleepUntilCycle{0};
+    std::vector<int> forLoopCounters; // Stack for nested for loops
+    std::vector<int> forLoopMaxRepeats;
+
+
 public:
     // Constructor
     Process(const std::string& processName, int numInstructions = 100) 
@@ -122,7 +136,7 @@ public:
         std::strftime(buffer, sizeof(buffer), "%m/%d/%Y %I:%M:%S%p", timeinfo);
         timeCreated = buffer;
 
-        
+        generateRandomInstructions(numInstructions);
     }
     
     // Delete copy constructor and assignment operator to prevent copying
@@ -134,7 +148,8 @@ public:
         : name(std::move(other.name)), id(other.id), totalInstructions(other.totalInstructions),
           remainingInstructions(other.remainingInstructions), currentInstruction(other.currentInstruction),
           timeCreated(std::move(other.timeCreated)), assignedCore(other.assignedCore),
-          logFile(std::move(other.logFile)) {
+          logFile(std::move(other.logFile)), instructions(std::move(other.instructions)),
+          variables(std::move(other.variables)), sleepUntilCycle(other.sleepUntilCycle.load()) {
     }
     
     // Move assignment operator
@@ -148,6 +163,9 @@ public:
             timeCreated = std::move(other.timeCreated);
             assignedCore = other.assignedCore;
             logFile = std::move(other.logFile);
+            instructions = std::move(other.instructions);
+            variables = std::move(other.variables);
+            sleepUntilCycle.store(other.sleepUntilCycle.load());
         }
         return *this;
     }
@@ -158,24 +176,140 @@ public:
             logFile->close();
         }
     }
+
+    // for instructions not sureee
+    void generateRandomInstructions(int numInstructions, int depth = 0) {
+        instructions.clear();
+        for (int i = 0; i < numInstructions; ++i) {
+            Instruction instr;
+            int instrType = std::rand() % 6;
+            switch (instrType) {
+                case 0: // PRINT
+                    instr.type = InstructionType::PRINT;
+                    instr.args.push_back("\"Hello world from " + name + "!\"");
+                    break;
+                case 1: // DECLARE
+                    instr.type = InstructionType::DECLARE;
+                    instr.args.push_back("var" + std::to_string(std::rand() % 10));
+                    instr.args.push_back(std::to_string(std::rand() % 100));
+                    break;
+                case 2: // ADD
+                    instr.type = InstructionType::ADD;
+                    instr.args.push_back("var" + std::to_string(std::rand() % 10));
+                    instr.args.push_back("var" + std::to_string(std::rand() % 10));
+                    instr.args.push_back(std::to_string(std::rand() % 50));
+                    break;
+                case 3: // SUBTRACT
+                    instr.type = InstructionType::SUBTRACT;
+                    instr.args.push_back("var" + std::to_string(std::rand() % 10));
+                    instr.args.push_back("var" + std::to_string(std::rand() % 10));
+                    instr.args.push_back(std::to_string(std::rand() % 50));
+                    break;
+                case 4: // SLEEP
+                    instr.type = InstructionType::SLEEP;
+                    instr.args.push_back(std::to_string(std::rand() % 10 + 1)); // Sleep for 1-10 ticks
+                    break;
+                case 5: // FOR
+                    if (depth < 3) { // Nest up to 3 times
+                        instr.type = InstructionType::FOR;
+                        int repeats = std::rand() % 5 + 1;
+                        instr.args.push_back(std::to_string(repeats));
+                        int nestedInstructionCount = std::rand() % 3 + 1;
+                        for(int j=0; j < nestedInstructionCount; ++j) {
+                            // Simplified nested instruction generation
+                            Instruction nested;
+                            nested.type = InstructionType::PRINT;
+                            nested.args.push_back("\"Nested loop says hi!\"");
+                            instr.nestedInstructions.push_back(nested);
+                        }
+                    } else { // Fallback to PRINT if too deep
+                        instr.type = InstructionType::PRINT;
+                        instr.args.push_back("\"Max nesting reached!\"");
+                    }
+                    break;
+            }
+            instructions.push_back(instr);
+        }
+        totalInstructions = instructions.size();
+        remainingInstructions = instructions.size();
+    }
     
     // Execute one instruction of the process
     bool executeInstruction(int coreId) {
         std::lock_guard<std::mutex> lock(processExecutionMutex);
+
+        if (global_simulated_cycles < sleepUntilCycle) {
+            return true;
+        }
         
-        // Implement delays-per-exec
         if (delaysPerExec > 0) {
             cyclesSinceLastExec++;
             if (cyclesSinceLastExec <= delaysPerExec) {
-                return true; // Skip execution but count as a cycle
+                return true;
             }
             cyclesSinceLastExec = 0;
         }
         
-        if (remainingInstructions > 0) {
-            currentInstruction++;
-            remainingInstructions--;
+        if (currentInstruction >= instructions.size()) {
+                return false;
+            }
+
+            const auto& instr = instructions[currentInstruction];
             assignedCore = coreId;
+            std::ostringstream oss;
+
+            switch (instr.type) {
+                case InstructionType::PRINT: {
+                    std::string msg = instr.args[0];
+                    // Simple variable replacement
+                    size_t pos = msg.find("+");
+                    if (pos != std::string::npos) {
+                        std::string varName = msg.substr(pos + 1);
+                        // trim whitespace
+                        varName.erase(std::remove_if(varName.begin(), varName.end(), ::isspace), varName.end());
+                        msg = msg.substr(0, pos);
+                        oss << msg.substr(1, msg.length() - 2) << (variables.count(varName) ? std::to_string(variables[varName]) : "0");
+                    } else {
+                        oss << msg.substr(1, msg.length() - 2);
+                    }
+                    break;
+                }
+                case InstructionType::DECLARE: {
+                    variables[instr.args[0]] = static_cast<uint16_t>(std::stoul(instr.args[1]));
+                    oss << "Declared " << instr.args[0] << " = " << instr.args[1];
+                    break;
+                }
+                case InstructionType::ADD: {
+                    uint16_t val2 = variables.count(instr.args[1]) ? variables[instr.args[1]] : 0;
+                    uint16_t val3 = variables.count(instr.args[2]) ? variables[instr.args[2]] : static_cast<uint16_t>(std::stoul(instr.args[2]));
+                    variables[instr.args[0]] = val2 + val3;
+                    oss << "ADD: " << instr.args[0] << " = " << val2 << " + " << val3 << " -> " << variables[instr.args[0]];
+                    break;
+                }
+                case InstructionType::SUBTRACT: {
+                    uint16_t val2 = variables.count(instr.args[1]) ? variables[instr.args[1]] : 0;
+                    uint16_t val3 = variables.count(instr.args[2]) ? variables[instr.args[2]] : static_cast<uint16_t>(std::stoul(instr.args[2]));
+                    uint16_t result = (val2 > val3) ? val2 - val3 : 0; // Clamp at 0
+                    variables[instr.args[0]] = result;
+                    oss << "SUBTRACT: " << instr.args[0] << " = " << val2 << " - " << val3 << " -> " << result;
+                    break;
+                }
+                case InstructionType::SLEEP: {
+                    uint8_t sleepTicks = static_cast<uint8_t>(std::stoul(instr.args[0]));
+                    sleepUntilCycle = global_simulated_cycles + sleepTicks;
+                    oss << "Sleeping for " << std::to_string(sleepTicks) << " cycles.";
+                    break;
+                }
+                case InstructionType::FOR:
+                    // This is a simplified placeholder. A full implementation would require more complex state management.
+                    // For now, we just execute the nested instructions.
+                    for (const auto& nested_instr : instr.nestedInstructions) {
+                        // For simplicity, we just log a message for nested execution
+                        logs.push_back("Executing nested instruction inside FOR loop.");
+                    }
+                    oss << "Executed a FOR loop.";
+                    break;
+            }
             
             // Log the print command
             std::time_t timestamp; // Get current time
@@ -188,22 +322,21 @@ public:
            
            // Log the print command
 
-            std::ostringstream oss; 
-            oss << "(" << buffer << ") Core:" << coreId << " \"Hello world from " << name << "!\"";
-            logs.push_back(oss.str());
+            std::ostringstream log_entry;
+            log_entry << "(" << buffer << ") Core:" << coreId << " " << oss.str();
+            logs.push_back(log_entry.str());
 
-            
+            currentInstruction++;
+            remainingInstructions = instructions.size() - currentInstruction;
+
 
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             
             return true;
-        }
-        return false;
     }
     
-    // Check if process can execute (thread-safe)
     bool canExecute() const {
-        return remainingInstructions > 0;
+         return !hasFinished();
     }
     
     // Getters
@@ -605,7 +738,6 @@ void screen(std::string &screenCommand) {
     if(option == "-s") {
         // If no screen name provided, create multiple processes
         if(screenName.empty()) {
-            // Create 3 processes: proc-01, proc-02, proc-03
             for(int i = 1; i <= 3; i++) {
                 std::string procName = "proc-";
                 if(i < 10) procName += "0";
@@ -617,7 +749,7 @@ void screen(std::string &screenCommand) {
                     scheduler->addProcess(allProcesses.back().get());
                 }
             }
-            std::cout << "3 processes created successfully: proc-01, proc-02, proc-03" << std::endl << std::endl;
+            std::cout << "Processes created successfully" << std::endl << std::endl;
             return;
         } else {
             // Create single process with given name
@@ -715,7 +847,9 @@ void screen(std::string &screenCommand) {
                     std::cout << "ID: " << process->getId() << std::endl;
                     std::cout << "Logs:" << std::endl;
                     for (const auto& logEntry : process->getLogs()) {
-                        std::cout << logEntry << std::endl;
+                         if (logEntry.find("Hello world from") != std::string::npos) {
+                            std::cout << logEntry << std::endl;
+                        }
                     }
                     std::cout << "\nCurrent instruction line: " << process->getCurrentInstruction() << std::endl;
                     std::cout << "Lines of code: " << process->getTotalInstructions() << "\n" << std::endl;
@@ -738,10 +872,10 @@ void screen(std::string &screenCommand) {
 void processCreationLoop() {
     static int i = 0;
     long long lastCycle = 0;
-    
+
     // Wait for scheduler to start up
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    
+
     while (processCreationRunning) {
         // Only create processes if scheduler is running AND we have available cores
         if (scheduler && scheduler->isRunning()) {
@@ -757,7 +891,7 @@ void processCreationLoop() {
                 }
                 coresInUse = usedCores.size();
             }
-            
+
             // Only create new process if we have available cores AND enough cycles have passed
             if (coresInUse < numCPU && (global_simulated_cycles - lastCycle >= batchProcessFreq)) {
                 std::string processName = "process_";
@@ -765,14 +899,14 @@ void processCreationLoop() {
                     processName += "0";
                 }
                 processName += std::to_string(i++);
-                
+
                 createScreen(processName);
                 scheduler->addProcess(allProcesses.back().get());
-                
+
                 lastCycle = global_simulated_cycles;
             }
         }
-        
+
         // Longer sleep to prevent overwhelming the system
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
@@ -791,6 +925,17 @@ void schedulerStart() {
     }
 
     if (!scheduler->isRunning()) {
+
+        {
+            std::lock_guard<std::mutex> pLock(processMutex);
+            std::cout << "Adding " << allProcesses.size() << " pre-existing processes to the scheduler..." << std::endl;
+            for (const auto& process : allProcesses) {
+                if (!process->hasFinished()) {
+                    scheduler->addProcess(process.get());
+                }
+            }
+        }
+        
         std::cout << "Creating processes. Enter \"scheduler-stop\" to cease." << std::endl;
         processCreationRunning = true;
         schedulerRunning = true;
@@ -856,7 +1001,7 @@ void reportUtil() {
     std::lock_guard<std::mutex> lock(processMutex);
 
     std::set<int> usedCores;
-    for (const auto& process : runningProcesses) {
+    for (const auto& process : runningProcesses) { 
         if (process->getAssignedCore() != -1) {
             usedCores.insert(process->getAssignedCore());
         }
