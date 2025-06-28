@@ -152,22 +152,22 @@ bool readConfig(){
 // Process class
 class Process {
 private:
-    std::string name;
-    int id;
-    int totalInstructions;
-    int remainingInstructions;
-    int currentInstruction;
-    std::string timeCreated;
-    int assignedCore;
-    std::unique_ptr<std::ofstream> logFile;
+    std::string name; // name of the process based from user input
+    int id; // process id 
+    int totalInstructions; // total number of instructions that the process needs to run
+    int remainingInstructions; // number of instructions in the process queue
+    int currentInstruction; // line of instruction the process is currently in
+    std::string timeCreated; // time the process was created, includes date and time
+    int assignedCore; // the process's assigned core to execute in
+    std::unique_ptr<std::ofstream> logFile; // stores the logfile of past processes executed
     std::mutex processExecutionMutex; // Mutex to protect process execution
     std::vector<std::string> logs; // Store execution logs
     std::atomic<int> cyclesSinceLastExec{0}; // For delays-per-exec implementation
-    std::vector<Instruction> instructions;
-    std::map<std::string, uint16_t> variables;
-    std::atomic<uint64_t> sleepUntilCycle{0};
+    std::vector<Instruction> instructions;  // list of instructions the process will implement
+    std::map<std::string, uint16_t> variables; // variables that will be declared during the process
+    std::atomic<uint64_t> sleepUntilCycle{0}; // for applying sleep to a process
     std::vector<int> forLoopCounters; // Stack for nested for loops
-    std::vector<int> forLoopMaxRepeats;
+    std::vector<int> forLoopMaxRepeats; 
 
 
 public:
@@ -241,23 +241,23 @@ public:
                 case 1: // DECLARE
                     instr.type = InstructionType::DECLARE;
                     instr.args.push_back("var" + std::to_string(std::rand() % 10));
-                    instr.args.push_back(std::to_string(std::rand() % 100));
+                    instr.args.push_back(std::to_string(std::rand() % 65536));
                     break;
                 case 2: // ADD
                     instr.type = InstructionType::ADD;
                     instr.args.push_back("var" + std::to_string(std::rand() % 10));
                     instr.args.push_back("var" + std::to_string(std::rand() % 10));
-                    instr.args.push_back(std::to_string(std::rand() % 50));
+                    instr.args.push_back(std::to_string(std::rand() % 65536));
                     break;
                 case 3: // SUBTRACT
                     instr.type = InstructionType::SUBTRACT;
                     instr.args.push_back("var" + std::to_string(std::rand() % 10));
                     instr.args.push_back("var" + std::to_string(std::rand() % 10));
-                    instr.args.push_back(std::to_string(std::rand() % 50));
+                    instr.args.push_back(std::to_string(std::rand() % 65536));
                     break;
                 case 4: // SLEEP
                     instr.type = InstructionType::SLEEP;
-                    instr.args.push_back(std::to_string(std::rand() % 10 + 1)); // Sleep for 1-10 ticks
+                    instr.args.push_back(std::to_string(std::rand() % 255 + 1)); // Sleep for 1-255 ticks
                     break;
                 case 5: // FOR
                     if (depth < 3) { // Nest up to 3 times
