@@ -526,23 +526,41 @@ void createScreen(std::string &screenName) {
 
 void screenLS() {
     std::lock_guard<std::mutex> lock(processMutex);
-    
+
+    // Calculate CPU Utilization and cores used
+    int coresUsed = 0;
+    std::set<int> usedCores;
+    for (const auto& process : runningProcesses) {
+        int core = process->getAssignedCore();
+        if (core >= 0) {
+            usedCores.insert(core);
+        }
+    }
+    coresUsed = static_cast<int>(usedCores.size());
+    int coresAvailable = numCPU - coresUsed;
+    if (coresAvailable < 0) coresAvailable = 0;
+    int cpuUtil = (numCPU > 0) ? static_cast<int>((coresUsed * 100.0) / numCPU + 0.5) : 0;
+
     std::cout << "================\n";
+    std::cout << "CPU Utilization: " << cpuUtil << "%\n";
+    std::cout << "Cores used: " << coresUsed << "\n";
+    std::cout << "Cores Available: " << coresAvailable << "\n";
+    std::cout << "================\n";
+
     std::cout << "Running processes:\n";
-    
     for (const auto& process : runningProcesses) {
         std::cout << process->getName() << " (" << process->getTimeCreated() << ")  "
                   << "Core: " << process->getAssignedCore() << "  "
                   << process->getCurrentInstruction() << "  /  " << process->getTotalInstructions() << std::endl;
     }
     std::cout << "\n\n------------------\n\n";
-    
+
     std::cout << "\nFinished processes:\n";
     for (const auto& process : finishedProcesses) {
         std::cout << process->getName() << "  (" << process->getTimeCreated() << ")  "
                   << "Finished " << process->getTotalInstructions() << "  /  " << process->getTotalInstructions() << std::endl;
     }
-    
+
     std::cout << "================\n\n";
 }
 
