@@ -566,55 +566,21 @@ void screen(std::string &screenCommand) {
         }
     }
     else if(option == "-r" && !screenName.empty()) {
-        bool found = false;
-        for(auto& scr : screenList) {
-            if(scr.screenName == screenName) {
-                clearScreen();
-
-                curScreen = scr;
-                std::cout << "Screen: " << curScreen.screenName << std::endl;
-                // Find corresponding process
-                auto it = std::find_if(allProcesses.begin(), allProcesses.end(),
-                    [&screenName](const std::unique_ptr<Process>& p) { return p->getName() == screenName; });
-                
-                if (it != allProcesses.end()) {
-                    std::cout << "Running instruction: " << (*it)->getCurrentInstruction() 
-                              << " out of " << (*it)->getTotalInstructions() << std::endl;
-                } else {
-                    std::cout << "Running instruction: " << curScreen.curInstruction 
-                              << " out of " << curScreen.totalInstruction << std::endl;
-                }
-                
-                std::cout << "Time Created: " << curScreen.timeCreated << std::endl << std::endl;
-                scr.isDetached = false;
-                found = true;
-                break;
-            }
-        }
-        if(!found) {
-            std::cout << "Screen \"" << screenName << "\" not found." << std::endl << std::endl;
-        }
-    }
-    else if(option == "-d" && !screenName.empty()) {
-        bool found = false;
-        for(auto& scr : screenList) {
-            if(scr.screenName == screenName) {
-                scr.isDetached = true;
-                std::cout << "Screen \"" << screenName << "\" detached." << std::endl << std::endl;
-                found = true;
-                break;
-            }
-        }
-        if(!found) {
-            std::cout << "Screen \"" << screenName << "\" not found." << std::endl << std::endl;
-        }
+        // TODO: Reattach Functionality.
+        clearScreen();
+        std::cout << "screen -r not yet implemented.\n";
+        return;
     }
     else if(option == "-ls") {
         screenLS();
         return;
     }
+    else {
+        std::cout << "Invalid screen command. Usage: screen -s <name>, screen -r <name>, or screen -ls\n";
+        return;
+    }
 
-    if(option != "-ls") {
+    if(option != "-ls" && option != "-r") {
         std::string screenInput;
         while(screenInput != "exit") {
             std::cout << "Enter a command, or type exit to return to the main menu: ";
