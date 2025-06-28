@@ -525,8 +525,6 @@ public:
             }
         }
         coreThreads.clear();
-        
-        std::cout << "Scheduler stopped." << std::endl;
     }
 
     void coreWorker(int coreId) {
@@ -1030,7 +1028,6 @@ void schedulerStart() {
 
         {
             std::lock_guard<std::mutex> pLock(processMutex);
-            std::cout << "Adding " << allProcesses.size() << " pre-existing processes to the scheduler..." << std::endl;
             for (const auto& process : allProcesses) {
                 if (!process->hasFinished()) {
                     scheduler->addProcess(process.get());
@@ -1076,7 +1073,6 @@ void schedulerStop() {
             runningProcesses.clear();
         }
         
-        std::cout << "Scheduler stopped." << std::endl;
         std::cout << "Total screens/processes created: " << screenList.size() << std::endl;
     } else {
         std::cout << "Scheduler is not running." << std::endl;
