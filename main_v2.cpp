@@ -193,8 +193,8 @@ public:
             logs.push_back(oss.str());
 
             
-            // REMOVED THE SLEEP - This was the main bottleneck!
-            // std::this_thread::sleep_for(std::chrono::milliseconds(10));
+
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
             
             return true;
         }
@@ -223,17 +223,14 @@ public:
 void cpuCycleLoop() {
     while (schedulerRunning) {
         global_simulated_cycles++;
-        // REMOVED SLEEP for faster simulation
-        // std::this_thread::sleep_for(std::chrono::microseconds(100));
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
         
-        // Add a small yield to prevent CPU spinning too hard
-        if (global_simulated_cycles % 1000 == 0) {
+        if (global_simulated_cycles % 100 == 0) {
             std::this_thread::yield();
         }
     }
 }
 
-// Enhanced Screen class
 class Screen {
 public:
     std::string screenName;
@@ -279,6 +276,13 @@ void intro() {
     std::cout << "Hello, Welcome to CSOPESY commandline!" << std::endl;
     setColor(14);
     std::cout << "Type 'exit' to quit, 'clear' to clear the screen." << std::endl;
+
+    setColor(7);
+    std::cout << "\nDevelopers:\n";
+    std::cout << "Dimaculangan, Renzel\n"
+              << "Guerrero, Miguel\n"
+              << "Valdez, Kimi\n"
+              << "Velasquez, Almira Zabrina Alyson\n\n";
 }
 
 // Abstract Scheduler base class
@@ -483,7 +487,6 @@ public:
                 }
             }
 
-            // Remove from active set
             {
                 std::lock_guard<std::mutex> lock(queueMutex);
                 activeProcessIds.erase(processToExecute->getId());
@@ -494,7 +497,6 @@ public:
                 runningProcesses.erase(std::remove(runningProcesses.begin(), runningProcesses.end(), processToExecute), runningProcesses.end());
                 finishedProcesses.push_back(processToExecute);
             } else if (running) {
-                // If process is not finished, add it back to the queue
                 addProcess(processToExecute);
             }
         }
@@ -734,31 +736,45 @@ void screen(std::string &screenCommand) {
 }
 
 void processCreationLoop() {
-    static int i = 0; // persists across function calls
+    static int i = 0;
     long long lastCycle = 0;
     
-    // Wait a bit for the scheduler to start up
+    // Wait for scheduler to start up
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     
     while (processCreationRunning) {
-        // Create process based on batch frequency
-        if (global_simulated_cycles - lastCycle >= batchProcessFreq) {
-            std::string processName = "process_";
-            if (i < 10) {
-                processName += "0";
+        // Only create processes if scheduler is running AND we have available cores
+        if (scheduler && scheduler->isRunning()) {
+            // Check if we have available cores before creating new processes
+            int coresInUse = 0;
+            {
+                std::lock_guard<std::mutex> lock(processMutex);
+                std::set<int> usedCores;
+                for (const auto& process : runningProcesses) {
+                    if (process->getAssignedCore() != -1) {
+                        usedCores.insert(process->getAssignedCore());
+                    }
+                }
+                coresInUse = usedCores.size();
             }
-            processName += std::to_string(i++);
             
-            createScreen(processName);
-            if (scheduler && scheduler->isRunning()) {
+            // Only create new process if we have available cores AND enough cycles have passed
+            if (coresInUse < numCPU && (global_simulated_cycles - lastCycle >= batchProcessFreq)) {
+                std::string processName = "process_";
+                if (i < 10) {
+                    processName += "0";
+                }
+                processName += std::to_string(i++);
+                
+                createScreen(processName);
                 scheduler->addProcess(allProcesses.back().get());
+                
+                lastCycle = global_simulated_cycles;
             }
-            
-            lastCycle = global_simulated_cycles;
         }
         
-        // Small sleep to prevent tight loop
-        std::this_thread::sleep_for(std::chrono::microseconds(10));
+        // Longer sleep to prevent overwhelming the system
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 }
 
@@ -787,14 +803,45 @@ void schedulerStart() {
 }
 
 void schedulerStop() {
-    processCreationRunning = false; // Signal process creation thread to stop
-    schedulerRunning = false;       // Signal CPU cycle thread to stop
+    std::cout << "Stopping scheduler and process creation..." << std::endl;
+    
+    // Stop new process creation first
+    processCreationRunning = false;
+    
+    // Give a moment for process creation to stop
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    
     if (scheduler != nullptr && scheduler->isRunning()) {
         scheduler->stop();
+        
+        // Wait a bit for all processes to finish naturally
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        
+        {
+            std::lock_guard<std::mutex> pLock(processMutex);
+            
+            // Move any remaining running processes to finished
+            for (Process* proc : runningProcesses) {
+                if (proc->hasFinished()) {
+                    finishedProcesses.push_back(proc);
+                } else {
+                    // Mark incomplete processes as finished for clean shutdown
+                    finishedProcesses.push_back(proc);
+                }
+            }
+            
+            // Clear running processes to show 0% utilization
+            runningProcesses.clear();
+        }
+        
+        std::cout << "Scheduler stopped." << std::endl;
         std::cout << "Total screens/processes created: " << screenList.size() << std::endl;
     } else {
-        std::cout << "Scheduler is not running." << std::endl << std::endl;
+        std::cout << "Scheduler is not running." << std::endl;
     }
+    
+    // Stop CPU cycle simulation
+    schedulerRunning = false;
 }
 
 void reportUtil() {
@@ -839,7 +886,7 @@ void menu() {
     while (true) {
         
         setColor(7);
-        std::cout << "Enter a command: ";
+        std::cout << "root:\\> ";
         std::string command;
         std::getline(std::cin >> std::ws, command);
 
