@@ -43,7 +43,7 @@ int quantumCycles; //for round robin, how many ticks before swapping (1-2^32 inc
 int batchProcessFreq; //1 process every x cycles (1-2^32 inclusive)
 int minIns;
 int maxIns;
-int delaysPerExec; //1 instruction every x cycles (0 - 2^32 inclusive) if 0, it executes every cycle
+int delaysPerExec; //1 instruction every x cycles (0 - 2^32 inclusive) if 0, it/ executes every cycle
 
 //Instruction Types
 enum class InstructionType {
@@ -102,15 +102,17 @@ private:
     std::unique_ptr<std::ofstream> logFile;
     std::mutex processExecutionMutex; // Mutex to protect process execution
     std::vector<std::string> logs; // Store execution logs
+    std::vector<InstructionType> instructions;
     
 public:
     // Constructor
     Process(const std::string& processName, int numInstructions = 100) 
-        : name(processName), totalInstructions(numInstructions), 
-          remainingInstructions(numInstructions), currentInstruction(0), assignedCore(-1) {
+    : name(processName), totalInstructions(numInstructions), 
+      remainingInstructions(numInstructions), currentInstruction(0), assignedCore(-1) {
         
+
         id = processIdCounter++;
-        
+
         // Set creation time
         std::time_t timestamp;
         std::time(&timestamp);
@@ -119,7 +121,12 @@ public:
         std::strftime(buffer, sizeof(buffer), "%m/%d/%Y %I:%M:%S%p", timeinfo);
         timeCreated = buffer;
 
-        
+        // Generate random instructions
+        instructions.reserve(numInstructions);
+        for (int i = 0; i < numInstructions; ++i) {
+            int r = std::rand() % 6; // 6 instruction types
+            instructions.push_back(static_cast<InstructionType>(r));
+        }
     }
     
     // Delete copy constructor and assignment operator to prevent copying
@@ -159,29 +166,35 @@ public:
     // Execute one instruction of the process
     void executeInstruction(int coreId) {
         std::lock_guard<std::mutex> lock(processExecutionMutex);
-        
+
         if (remainingInstructions > 0) {
+            InstructionType instr = instructions[currentInstruction];
+            std::string instrStr;
+            switch (instr) {
+                case InstructionType::PRINT: instrStr = "PRINT"; break;
+                case InstructionType::ADD: instrStr = "ADD"; break;
+                case InstructionType::DECLARE: instrStr = "DECLARE"; break;
+                case InstructionType::SUBTRACT: instrStr = "SUBTRACT"; break;
+                case InstructionType::SLEEP: instrStr = "SLEEP"; break;
+                case InstructionType::FOR: instrStr = "FOR"; break;
+            }
+
             currentInstruction++;
             remainingInstructions--;
             assignedCore = coreId;
-            
-            // Log the print command
-            std::time_t timestamp; // Get current time
-            std::time(&timestamp); // Get current time in seconds since epoch
-            char buffer[30]; // Format time as MM/DD/YYYY HH:MM:SS AM/PM
-            std::tm* timeinfo = std::localtime(&timestamp); // Convert to local time
-            std::strftime(buffer, sizeof(buffer), "%m/%d/%Y %I:%M:%S%p", timeinfo); // Format time
 
-            //TODO: Remove writing to .txt file, instead execute the instruction on console [PRINT ONLY]
-           
-           // Log the print command
+            // Log the instruction execution
+            std::time_t timestamp;
+            std::time(&timestamp);
+            char buffer[30];
+            std::tm* timeinfo = std::localtime(&timestamp);
+            std::strftime(buffer, sizeof(buffer), "%m/%d/%Y %I:%M:%S%p", timeinfo);
 
-            std::ostringstream oss; 
-            oss << "(" << buffer << ") Core:" << coreId << " \"Hello world from " << name << "!\"";
+            std::ostringstream oss;
+            oss << "(" << buffer << ") Core:" << coreId << " Executed instruction: " << instrStr << " in " << name;
             logs.push_back(oss.str());
 
-            
-            // Simulate instruction execution time (reduced for faster testing)
+            // Simulate instruction execution time
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
     }
@@ -636,10 +649,13 @@ void processCreationLoop() {
     static int i = 0; // persists across function calls
     long long lastCycle = global_simulated_cycles;
     while (processCreationRunning) {
-        //one process every batchProcessFreq cycles
         if (global_simulated_cycles - lastCycle >= batchProcessFreq) {
             std::string processName = "process_0" + std::to_string(i++);
             createScreen(processName);
+            // Add the new process to the scheduler
+            if (scheduler && scheduler->isRunning()) {
+                scheduler->addProcess(allProcesses.back().get());
+            }
             lastCycle = global_simulated_cycles;
         }
     }
@@ -670,19 +686,13 @@ void schedulerStart() {
 }
 
 void schedulerStop() {
-    processCreationRunning = false; // Signal process creation thread to stop
-    schedulerRunning = false;       // Signal CPU cycle thread to stop
-    if (scheduler != nullptr && scheduler->isRunning()) {
-        scheduler->stop();
-        std::cout << "Total screens/processes created: " << screenList.size() << std::endl;
-    } else {
-        std::cout << "Scheduler is not running." << std::endl << std::endl;
-    }
+    processCreationRunning = false; // Only stop process creation
+    std::cout << "Stopped creation of new screens/processes. Existing processes will continue to execute.\n";
+    std::cout << "Total screens/processes created: " << screenList.size() << std::endl;
 }
 
 void reportUtil() {
     //TODO: screen -ls but put into a .txt file
-    
     std::ofstream outFile("csopesy-log.txt");
     if (!outFile.is_open()) {
         std::cerr << "Failed to open file for writing.\n";
