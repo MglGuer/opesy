@@ -816,28 +816,61 @@ void screen(std::string &screenCommand) {
     std::string command, option, argument;
     iss >> command >> option >> argument;
 
-    if(option == "-s") {
-        std::vector<Process*> justCreated; // A temporary list to hold newly created processes
+    if(option == "-s" && !argument.empty()) {
+        //std::vector<Process*> justCreated; // A temporary list to hold newly created processes
 
-        int numToCreate = 0;
-        bool isNumeric = !argument.empty() && argument.find_first_not_of("0123456789") == std::string::npos;
-
-        if (!argument.empty()) {
-            createScreen(argument);
-            justCreated.push_back(allProcesses.back().get()); // Track the new process
-            clearScreen();
-            std::cout << "Screen created: " << curScreen.screenName << std::endl;
-            std::cout << "Instructions: " << curScreen.curInstruction << " out of " << curScreen.totalInstruction << std::endl;
-            std::cout << "Time Created: " << curScreen.timeCreated << std::endl << std::endl;
-        }
+        createScreen(argument);
+        Process* newProcess = allProcesses.back().get();
 
         if (scheduler && scheduler->isRunning()) {
-            for (Process* p : justCreated) {
-                scheduler->addProcess(p);
-            }
-        } 
-        else {
+            scheduler->addProcess(newProcess);
+        } else {
             manualProcessesScheduler();
+        }
+
+        clearScreen();
+        std::cout << "Screen created: " << newProcess->getName() << std::endl;
+        std::cout << "Instructions: " << newProcess->getCurrentInstruction() << " out of " << newProcess->getTotalInstructions() << std::endl;
+        std::cout << "Time Created: " << newProcess->getTimeCreated() << std::endl;
+
+        std::string screenInput;
+        while (true) {
+            std::cout << "\n" << newProcess->getName() << ":\\> ";
+            std::getline(std::cin, screenInput);
+
+            if (screenInput == "process-smi") {
+                Process* process = nullptr;
+                auto it = std::find_if(allProcesses.begin(), allProcesses.end(),
+                    [&](const std::unique_ptr<Process>& p) { return p->getName() == newProcess->getName(); });
+
+                if (it != allProcesses.end()) {
+                    process = it->get();
+                    std::cout << "\nProcess name: " << process->getName();
+
+                    if (process->hasFinished()) {
+                        std::cout << " Finished!" << std::endl;
+                    } else {
+                        std::cout << std::endl;
+                    }
+
+                    std::cout << "ID: " << process->getId() << std::endl;
+                    std::cout << "Logs:" << std::endl;
+                    for (const auto& logEntry : process->getLogs()) {
+                        if (logEntry.find("Value of") != std::string::npos || logEntry.find("Hello world from") != std::string::npos) {
+                            std::cout << logEntry << std::endl;
+                        }
+                    }
+                    std::cout << "\nCurrent instruction line: " << process->getCurrentInstruction() << std::endl;
+                    std::cout << "Lines of code: " << process->getTotalInstructions() << "\n";
+                }
+
+            } else if (screenInput == "exit") {
+                clearScreen();
+                intro();
+                break;   
+            } else {
+                std::cout << "Invalid command. You can only use 'process-smi' or 'exit'." << std::endl;
+            }
         }
         return;
     }
