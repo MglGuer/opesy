@@ -853,6 +853,23 @@ void reportUtil() {
         return;
     }
 
+    std::lock_guard<std::mutex> lock(processMutex);
+
+    std::set<int> usedCores;
+    for (const auto& process : runningProcesses) {
+        if (process->getAssignedCore() != -1) {
+            usedCores.insert(process->getAssignedCore());
+        }
+    }
+    
+    int coresUsed = usedCores.size();
+    int coresAvailable = numCPU - coresUsed;
+    double cpuUtilization = (numCPU > 0) ? (static_cast<double>(coresUsed) / numCPU * 100.0) : 0.0;
+    
+    outFile << "CPU utilization: " << std::fixed << std::setprecision(2) << cpuUtilization << "%\n";
+    outFile << "Cores used: " << coresUsed << "\n";
+    outFile << "Cores available: " << coresAvailable << "\n";
+
     outFile << "================\n";
     outFile << "Running processes:\n";
 
