@@ -336,7 +336,7 @@ public:
     }
     
     bool canExecute() const {
-         return !hasFinished();
+        return !hasFinished();
     }
     
     // Getters
@@ -404,7 +404,7 @@ void printASCII(std::string fileName) {
 // ASCII CSOPESY
 void intro() {
     std::string fileName = "ascii.txt";
-    //printASCII(fileName); TODO: uncomment when done debugging.
+    printASCII(fileName);
     setColor(10);
     std::cout << "Hello, Welcome to CSOPESY commandline!" << std::endl;
     setColor(14);
@@ -688,6 +688,35 @@ void createScreen(std::string &screenName) {
     allProcesses.push_back(std::move(newProcess));
 }
 
+void manualProcessesScheduler() {
+    if (scheduler && scheduler->isRunning()) {
+        return;
+    }
+
+    if (scheduler == nullptr) {
+        if (schedulerType == "fcfs") {
+            scheduler = new FCFSScheduler(numCPU);
+        } else if (schedulerType == "rr") {
+            scheduler = new RoundRobinScheduler(numCPU, quantumCycles);
+        } else {
+            std::cout << "Error: Unknown scheduler type '" << schedulerType << "' in config.txt. Aborting." << std::endl;
+            return;
+        }
+    }
+    {
+        std::lock_guard<std::mutex> pLock(processMutex);
+        for (const auto& process : allProcesses) {
+            if (!process->hasFinished()) {
+                scheduler->addProcess(process.get());
+            }
+        }
+    }
+    schedulerRunning = true;
+    std::thread(cpuCycleLoop).detach();
+    scheduler->start();
+    
+}
+
 
 
 void screenLS() {
@@ -714,15 +743,15 @@ void screenLS() {
     
     for (const auto& process : runningProcesses) {
         std::cout << process->getName() << " (" << process->getTimeCreated() << ")  "
-                  << "Core: " << process->getAssignedCore() << "  "
-                  << process->getCurrentInstruction() << "  /  " << process->getTotalInstructions() << std::endl;
+                << "Core: " << process->getAssignedCore() << "  "
+            << process->getCurrentInstruction() << "  /  " << process->getTotalInstructions() << std::endl;
     }
     std::cout << "\n\n------------------\n\n";
     
     std::cout << "\nFinished processes:\n";
     for (const auto& process : finishedProcesses) {
         std::cout << process->getName() << "  (" << process->getTimeCreated() << ")  "
-                  << "Finished " << process->getTotalInstructions() << "  /  " << process->getTotalInstructions() << std::endl;
+                << "Finished " << process->getTotalInstructions() << "  /  " << process->getTotalInstructions() << std::endl;
     }
     
     std::cout << "================\n\n";
@@ -732,43 +761,38 @@ void screenLS() {
 
 void screen(std::string &screenCommand) {
     std::istringstream iss(screenCommand);
-    std::string screen, option, screenName;
-    iss >> screen >> option >> screenName;
+    std::string command, option, argument;
+    iss >> command >> option >> argument;
 
     if(option == "-s") {
-        // If no screen name provided, create multiple processes
-        if(screenName.empty()) {
-            for(int i = 1; i <= 3; i++) {
-                std::string procName = "proc-";
-                if(i < 10) procName += "0";
-                procName += std::to_string(i);
-                createScreen(procName);
-                
-                // Add process to scheduler if it's running
-                if (scheduler && scheduler->isRunning()) {
-                    scheduler->addProcess(allProcesses.back().get());
-                }
-            }
-            std::cout << "Processes created successfully" << std::endl << std::endl;
-            return;
-        } else {
-            // Create single process with given name
-            createScreen(screenName);
+        std::vector<Process*> justCreated; // A temporary list to hold newly created processes
+
+        int numToCreate = 0;
+        bool isNumeric = !argument.empty() && argument.find_first_not_of("0123456789") == std::string::npos;
+
+        if (!argument.empty()) {
+            createScreen(argument);
+            justCreated.push_back(allProcesses.back().get()); // Track the new process
             clearScreen();
             std::cout << "Screen created: " << curScreen.screenName << std::endl;
             std::cout << "Instructions: " << curScreen.curInstruction << " out of " << curScreen.totalInstruction << std::endl;
             std::cout << "Time Created: " << curScreen.timeCreated << std::endl << std::endl;
-            
-            // Add process to scheduler if it's running
-            if (scheduler && scheduler->isRunning()) {
-                scheduler->addProcess(allProcesses.back().get());
-            }
         }
+
+        if (scheduler && scheduler->isRunning()) {
+            for (Process* p : justCreated) {
+                scheduler->addProcess(p);
+            }
+        } 
+        else {
+            manualProcessesScheduler();
+        }
+        return;
     }
-    else if(option == "-r" && !screenName.empty()) {
+    else if(option == "-r" && !argument.empty()) {
+        std::string screenName = argument;
         bool found = false;
         
-        // First check if process is finished
         auto finishedIt = std::find_if(finishedProcesses.begin(), finishedProcesses.end(),
             [&screenName](const Process* p) { return p->getName() == screenName; });
         
@@ -783,16 +807,15 @@ void screen(std::string &screenCommand) {
 
                 curScreen = scr;
                 std::cout << "Screen: " << curScreen.screenName << std::endl;
-                // Find corresponding process
                 auto it = std::find_if(allProcesses.begin(), allProcesses.end(),
                     [&screenName](const std::unique_ptr<Process>& p) { return p->getName() == screenName; });
                 
                 if (it != allProcesses.end()) {
                     std::cout << "Running instruction: " << (*it)->getCurrentInstruction() 
-                              << " out of " << (*it)->getTotalInstructions() << std::endl;
+                            << " out of " << (*it)->getTotalInstructions() << std::endl;
                 } else {
                     std::cout << "Running instruction: " << curScreen.curInstruction 
-                              << " out of " << curScreen.totalInstruction << std::endl;
+                            << " out of " << curScreen.totalInstruction << std::endl;
                 }
                 
                 std::cout << "Time Created: " << curScreen.timeCreated << std::endl << std::endl;
@@ -803,9 +826,52 @@ void screen(std::string &screenCommand) {
         }
         if(!found) {
             std::cout << "Screen \"" << screenName << "\" not found." << std::endl << std::endl;
+            return;
+        }
+
+        if (found) {
+            std::string screenInput;
+            while(screenInput != "exit") {
+                std::cout << "root:\\> ";
+                std::getline(std::cin, screenInput);
+                if(screenInput == "process-smi") {
+                    auto it = std::find_if(allProcesses.begin(), allProcesses.end(),
+                        [&screenName](const std::unique_ptr<Process>& p) { return p->getName() == screenName; });
+                    
+                    if (it != allProcesses.end()) {
+                        Process* process = it->get();
+                        std::cout << "\nProcess name: " << process->getName();
+                        
+                        if (process->hasFinished()) {
+                            std::cout << " Finished!" << std::endl;
+                        } else {
+                            std::cout << std::endl;
+                        }
+                        
+                        std::cout << "ID: " << process->getId() << std::endl;
+                        std::cout << "Logs:" << std::endl;
+                        for (const auto& logEntry : process->getLogs()) {
+                            if (logEntry.find("Hello world from") != std::string::npos) {
+                                std::cout << logEntry << std::endl;
+                            }
+                        }
+                        std::cout << "\nCurrent instruction line: " << process->getCurrentInstruction() << std::endl;
+                        std::cout << "Lines of code: " << process->getTotalInstructions() << "\n" << std::endl;
+                    }   
+                }
+                else if (screenInput == "exit"){
+                    clearScreen();
+                    intro();
+                    break; 
+                }
+                else{
+                    std::cout << "Invalid command. You can only input 'process-smi' or 'exit'. " << std::endl << std::endl;
+                }
+            }
         }
     }
-    else if(option == "-d" && !screenName.empty()) {
+    else if(option == "-d" && !argument.empty()) {
+        std::string screenName = argument;
         bool found = false;
         for(auto& scr : screenList) {
             if(scr.screenName == screenName) {
@@ -823,63 +889,16 @@ void screen(std::string &screenCommand) {
         screenLS();
         return;
     }
-
-    if(option == "-r" && !screenName.empty()) {
-        std::string screenInput;
-        while(screenInput != "exit") {
-            std::cout << "Enter a command, or type exit to return to the main menu: ";
-            std::getline(std::cin, screenInput);
-            if(screenInput == "process-smi") {
-                // Find the specific process for this screen
-                auto it = std::find_if(allProcesses.begin(), allProcesses.end(),
-                    [&screenName](const std::unique_ptr<Process>& p) { return p->getName() == screenName; });
-                
-                if (it != allProcesses.end()) {
-                    Process* process = it->get();
-                    std::cout << "\nProcess name: " << process->getName();
-                    
-                    if (process->hasFinished()) {
-                        std::cout << " Finished!" << std::endl;
-                    } else {
-                        std::cout << std::endl;
-                    }
-                    
-                    std::cout << "ID: " << process->getId() << std::endl;
-                    std::cout << "Logs:" << std::endl;
-                    for (const auto& logEntry : process->getLogs()) {
-                         if (logEntry.find("Hello world from") != std::string::npos) {
-                            std::cout << logEntry << std::endl;
-                        }
-                    }
-                    std::cout << "\nCurrent instruction line: " << process->getCurrentInstruction() << std::endl;
-                    std::cout << "Lines of code: " << process->getTotalInstructions() << "\n" << std::endl;
-                }   
-            }
-            else if (screenInput == "exit"){
-                clearScreen();
-                intro();
-            }
-            else{
-                std::cout << "Invalid command. You can only input 'process-smi' or 'exit'. " << std::endl << std::endl;
-            }
-        }
-    }
-
-    
-
 }
 
 void processCreationLoop() {
     static int i = 0;
     long long lastCycle = 0;
 
-    // Wait for scheduler to start up
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
     while (processCreationRunning) {
-        // Only create processes if scheduler is running AND we have available cores
         if (scheduler && scheduler->isRunning()) {
-            // Check if we have available cores before creating new processes
             int coresInUse = 0;
             {
                 std::lock_guard<std::mutex> lock(processMutex);
@@ -892,7 +911,6 @@ void processCreationLoop() {
                 coresInUse = usedCores.size();
             }
 
-            // Only create new process if we have available cores AND enough cycles have passed
             if (coresInUse < numCPU && (global_simulated_cycles - lastCycle >= batchProcessFreq)) {
                 std::string processName = "process_";
                 if (i < 10) {
@@ -907,7 +925,6 @@ void processCreationLoop() {
             }
         }
 
-        // Longer sleep to prevent overwhelming the system
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 }
@@ -950,16 +967,12 @@ void schedulerStart() {
 void schedulerStop() {
     std::cout << "Stopping scheduler and process creation..." << std::endl;
     
-    // Stop new process creation first
     processCreationRunning = false;
-    
-    // Give a moment for process creation to stop
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     
     if (scheduler != nullptr && scheduler->isRunning()) {
         scheduler->stop();
         
-        // Wait a bit for all processes to finish naturally
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
         
         {
@@ -975,7 +988,6 @@ void schedulerStop() {
                 }
             }
             
-            // Clear running processes to show 0% utilization
             runningProcesses.clear();
         }
         
@@ -985,7 +997,6 @@ void schedulerStop() {
         std::cout << "Scheduler is not running." << std::endl;
     }
     
-    // Stop CPU cycle simulation
     schedulerRunning = false;
 }
 
