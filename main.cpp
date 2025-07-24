@@ -33,6 +33,10 @@ std::vector<Process*> runningProcesses;
 std::vector<Process*> finishedProcesses;
 Scheduler* scheduler = nullptr;
 std::mutex processMutex;
+
+//new additon, remove when seen
+std::mutex memoryMutex;
+
 std::atomic<bool> schedulerRunning{false};
 std::atomic<int> processIdCounter{1};
 std::atomic<long long> global_simulated_cycles{0}; // Global variable to track simulated cycles
@@ -176,10 +180,60 @@ bool readConfig(){
     if (outOfRangeCPU || outOfRangeScheduler || outOfRangeQuantum || outOfRangeBatch || outOfRangeMin || outOfRangeMax || outOfRangeDelay)
         return false;
     totalFrames = maxOverallMem / memPerFrame;
+    isMemoryUsed = std::vector<bool>(totalFrames, false); // Initialize memory usage tracking
     return true;
 }
 
+//TODO memory allocator (placeholder from gpt)
+int allocateMemory (int framesNeeded){
+    std::lock_guard<std::mutex> lock(memoryMutex);
+    int start = -1;
+    int count = 0;
 
+    for (int i=0; i<totalFrames; ++i) {
+        if (!isMemoryUsed[i]) {
+            if (count == 0)
+                start = i;
+            count++;
+            if (count == framesNeeded) {
+                // Allocate frames
+                for (int j = start; j < start + framesNeeded; ++j) {
+                    isMemoryUsed[j] = true;
+                }
+                return start; // Return the starting index of allocated frames
+            }
+        }
+        else{
+            count = 0; // Reset count if a used frame is encountered
+        }
+    }
+    return -1; // Not enough memory available
+}
+
+//TODO memory deallocator (placeholder from gpt)
+void freeMemory(int startIndex, int frames) {
+    std::lock_guard<std::mutex> lock(memoryMutex);
+    for (int i = startIndex; i < startIndex + frames; ++i)
+        isMemoryUsed[i] = false;
+}
+
+//TODO external fragmentation (placeholder from gpt)
+int countExternalFragmentation(int framesNeeded) {
+    std::lock_guard<std::mutex> lock(memoryMutex);
+    int totalFree = 0, largestBlock = 0, currentBlock = 0;
+
+    for (bool bit : isMemoryUsed) {
+        if (!bit) {
+            currentBlock++;
+            totalFree++;
+            largestBlock = std::max(largestBlock, currentBlock);
+        } else {
+            currentBlock = 0;
+        }
+    }
+
+    return (totalFree - largestBlock) * memPerFrame / 1024; // in KB
+}
 
 // Process class
 class Process {
@@ -200,7 +254,9 @@ private:
     std::atomic<uint64_t> sleepUntilCycle{0}; // for applying sleep to a process
     std::vector<int> forLoopCounters; // Stack for nested for loops
     std::vector<int> forLoopMaxRepeats; 
-
+    //added space to show new stuff, remove when seen
+    int memoryStartIndex = -1;
+    int framesAllocated = 0;
 
 public:
     // Constructor
@@ -516,6 +572,7 @@ public:
 };
 
 // FCFS Scheduler class
+//TODO add memory allocator to FCFSScheduler + generation of .txt file (not a prio for week 10)
 class FCFSScheduler : public Scheduler {
 private:
     int numCores; //Number of cores
@@ -608,7 +665,8 @@ public:
     bool isRunning() const override { return running; }
 };
 
-//TODO: Round Robin - FIXED VERSION
+//RR Scheduler Class
+//TODO add memory allocator to FCFSScheduler + generation of .txt file
 class RoundRobinScheduler : public Scheduler {
 private:
     int numCores;
