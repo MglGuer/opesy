@@ -43,8 +43,8 @@ std::atomic<long long> global_simulated_cycles{0}; // Global variable to track s
 std::atomic<bool> processCreationRunning{false}; 
 std::atomic<int> autoProcessCounter{0}; //for tracking auto-generated screen names
 
-//new additon, only added extra space so yall know i added this, remove na lang pag nakita na
-std::vector<bool> isMemoryUsed; //true = used, false = free
+//NEW
+std::vector<bool> memoryBlock; //true = used, false = free
 
 //FOR CONFIG.txt
 int numCPU; //number of cores (between 1-128 inclusive)
@@ -180,25 +180,25 @@ bool readConfig(){
     if (outOfRangeCPU || outOfRangeScheduler || outOfRangeQuantum || outOfRangeBatch || outOfRangeMin || outOfRangeMax || outOfRangeDelay)
         return false;
     totalFrames = maxOverallMem / memPerFrame;
-    isMemoryUsed = std::vector<bool>(totalFrames, false); // Initialize memory usage tracking
+    memoryBlock = std::vector<bool>(totalFrames, false); // Initialize memory usage tracking
     return true;
 }
 
-//TODO memory allocator (placeholder from gpt)
+//NEW
 int allocateMemory (int framesNeeded){
     std::lock_guard<std::mutex> lock(memoryMutex);
     int start = -1;
     int count = 0;
 
     for (int i=0; i<totalFrames; ++i) {
-        if (!isMemoryUsed[i]) {
+        if (!memoryBlock[i]) {
             if (count == 0)
                 start = i;
             count++;
             if (count == framesNeeded) {
                 // Allocate frames
                 for (int j = start; j < start + framesNeeded; ++j) {
-                    isMemoryUsed[j] = true;
+                    memoryBlock[j] = true;
                 }
                 return start; // Return the starting index of allocated frames
             }
@@ -210,30 +210,38 @@ int allocateMemory (int framesNeeded){
     return -1; // Not enough memory available
 }
 
-//TODO memory deallocator (placeholder from gpt)
+//NEW
 void freeMemory(int startIndex, int frames) {
     std::lock_guard<std::mutex> lock(memoryMutex);
     for (int i = startIndex; i < startIndex + frames; ++i)
-        isMemoryUsed[i] = false;
+        memoryBlock[i] = false;
 }
 
-//TODO external fragmentation (placeholder from gpt)
+//NEW
 int countExternalFragmentation(int framesNeeded) {
     std::lock_guard<std::mutex> lock(memoryMutex);
-    int totalFree = 0, largestBlock = 0, currentBlock = 0;
+    int fragmentation = 0;
+    int currentBlock = 0;
 
-    for (bool bit : isMemoryUsed) {
+    for (bool bit : memoryBlock) {
         if (!bit) {
             currentBlock++;
-            totalFree++;
-            largestBlock = std::max(largestBlock, currentBlock);
         } else {
+            if (currentBlock > 0 && currentBlock < framesNeeded) {
+                fragmentation += currentBlock;
+            }
             currentBlock = 0;
         }
     }
 
-    return (totalFree - largestBlock) * memPerFrame / 1024; // in KB
+    // Check trailing block
+    if (currentBlock > 0 && currentBlock < framesNeeded) {
+        fragmentation += currentBlock;
+    }
+
+    return (fragmentation * memPerFrame) / 1024; // Return in KB
 }
+
 
 // Process class
 class Process {
@@ -254,7 +262,7 @@ private:
     std::atomic<uint64_t> sleepUntilCycle{0}; // for applying sleep to a process
     std::vector<int> forLoopCounters; // Stack for nested for loops
     std::vector<int> forLoopMaxRepeats; 
-    //added space to show new stuff, remove when seen
+    //NEW
     int memoryStartIndex = -1;
     int framesAllocated = 0;
 
@@ -314,7 +322,19 @@ public:
             logFile->close();
         }
     }
-
+    //NEW
+    int getMemoryStartIndex() const {
+        return memoryStartIndex;
+    }
+    //NEW
+    int getFramesAllocated() const {
+        return framesAllocated;
+    }
+    //NEW
+    void setMemoryAllocation(int startIndex, int frames) {
+        memoryStartIndex = startIndex;
+        framesAllocated = frames;
+    }
     // for instructions not sureee
     void generateRandomInstructions(int numInstructions, int depth = 0) {
         instructions.clear();
@@ -489,11 +509,78 @@ public:
     const std::vector<std::string>& getLogs() const { return logs; }
 };
 
+// NEW: Function to dump memory status to a file
+void dumpMemoryStatus(uint64_t curCycle) {
+    std::string filename = "memory_stamp_" + std::to_string(curCycle) + ".txt";
+    std::ofstream outFile(filename);
+    if (!outFile.is_open()) return;
+
+    // Timestamp
+    auto t = std::time(nullptr);
+    auto tm = *std::localtime(&t);
+    char timestamp[100];
+    std::strftime(timestamp, sizeof(timestamp), "%m/%d/%Y %I:%M:%S%p", &tm);
+
+    // Count processes in memory
+    int procInMem = 0;
+    {
+        std::lock_guard<std::mutex> lock(processMutex);
+        for (const auto& p : runningProcesses)
+            if (p->getMemoryStartIndex() != -1) procInMem++;
+    }
+
+    int fragKB = countExternalFragmentation(memPerProc / memPerFrame);
+
+    outFile << "Timestamp: (" << timestamp << ")\n";
+    outFile << "Number of processes in memory: " << procInMem << "\n";
+    outFile << "Total external fragmentation in KB: " << fragKB << "\n\n";
+
+    outFile << "----end---- = " << maxOverallMem << "\n";
+
+    // Collect process layout
+    struct MemoryEntry {
+        int lower;
+        int upper;
+        std::string name;
+    };
+
+    std::vector<MemoryEntry> memLayout;
+
+    {
+        std::lock_guard<std::mutex> lock(processMutex);
+        for (const auto& p : runningProcesses) {
+            if (p->getMemoryStartIndex() != -1) {
+                int start = p->getMemoryStartIndex() * memPerFrame;
+                int end = start + (p->getFramesAllocated() * memPerFrame);
+                memLayout.push_back({start, end, p->getName()});
+            }
+        }
+    }
+
+    // Sort from top to bottom (descending upper address)
+    std::sort(memLayout.begin(), memLayout.end(), [](const MemoryEntry& a, const MemoryEntry& b) {
+        return a.upper > b.upper;
+    });
+
+    for (const auto& entry : memLayout) {
+        outFile << entry.upper << "\n";
+        outFile << entry.name << "\n";
+        outFile << entry.lower << "\n\n";
+    }
+
+    outFile << "----start---- = 0\n";
+
+    outFile.close();
+}
+
+
 void cpuCycleLoop() {
     while (schedulerRunning) {
         global_simulated_cycles++;
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        
+        if(global_simulated_cycles % quantumCycles == 0){
+            dumpMemoryStatus(global_simulated_cycles);
+        }
         if (global_simulated_cycles % 100 == 0) {
             std::this_thread::yield();
         }
@@ -753,6 +840,18 @@ public:
             // Execute for quantum cycles
             int executedCycles = 0;
             while (executedCycles < quantum && processToExecute->canExecute() && running) {
+                //NEW
+                if(processToExecute -> getMemoryStartIndex() == -1){
+                    int framesNeeded = memPerProc / memPerFrame;
+                    int memIndex = allocateMemory(framesNeeded);
+                    
+                    if(memIndex == -1){
+                        std::lock_guard<std::mutex> lock(queueMutex);
+                        processQueue.push(processToExecute);
+                        continue;
+                    }
+                    processToExecute->setMemoryAllocation(memIndex, framesNeeded);
+                }
                 processToExecute->executeInstruction(coreId);
                 executedCycles++;
                 
@@ -769,6 +868,9 @@ public:
 
             if (processToExecute->hasFinished()) {
                 std::lock_guard<std::mutex> pLock(processMutex);
+                if(processToExecute->getMemoryStartIndex() != -1){
+                    freeMemory(processToExecute->getMemoryStartIndex(), processToExecute->getFramesAllocated());
+                }
                 runningProcesses.erase(std::remove(runningProcesses.begin(), runningProcesses.end(), processToExecute), runningProcesses.end());
                 finishedProcesses.push_back(processToExecute);
             } else if (running) {
