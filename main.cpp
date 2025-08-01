@@ -218,28 +218,17 @@ void freeMemory(int startIndex, int frames) {
 }
 
 //NEW
-int countExternalFragmentation(int framesNeeded) {
+int countExternalFragmentation() {
     std::lock_guard<std::mutex> lock(memoryMutex);
-    int fragmentation = 0;
-    int currentBlock = 0;
+    int freeFrames = 0;
 
-    for (bool bit : memoryBlock) {
+    for(bool bit: memoryBlock) {
         if (!bit) {
-            currentBlock++;
-        } else {
-            if (currentBlock > 0 && currentBlock < framesNeeded) {
-                fragmentation += currentBlock;
-            }
-            currentBlock = 0;
+            freeFrames++;
         }
     }
 
-    // Check trailing block
-    if (currentBlock > 0 && currentBlock < framesNeeded) {
-        fragmentation += currentBlock;
-    }
-
-    return (fragmentation * memPerFrame) / 1024; // Return in KB
+    return (freeFrames * memPerFrame); // Return in KB
 }
 
 
@@ -529,7 +518,7 @@ void dumpMemoryStatus(uint64_t curCycle) {
             if (p->getMemoryStartIndex() != -1) procInMem++;
     }
 
-    int fragKB = countExternalFragmentation(memPerProc / memPerFrame);
+    int fragKB = countExternalFragmentation();
 
     outFile << "Timestamp: (" << timestamp << ")\n";
     outFile << "Number of processes in memory: " << procInMem << "\n";
@@ -643,7 +632,7 @@ void intro() {
     setColor(7);
     std::cout << "Last updated: ";
     setColor(14);
-    std::cout << "28/06/2025" << std::endl;
+    std::cout << "31/07/2025" << std::endl;
     setColor(7);
     std::cout << "-------------------------------------------------------------------------" << std::endl;
 }
@@ -1257,7 +1246,15 @@ void processCreationLoop() {
                 coresInUse = usedCores.size();
             }
 
-            if (coresInUse < numCPU && (global_simulated_cycles - lastCycle >= batchProcessFreq)) {
+            int activeProcessCount = 0;
+            {
+                std::lock_guard<std::mutex> lock(processMutex);
+                activeProcessCount = runningProcesses.size();
+            }
+
+            if (activeProcessCount < 4 && (global_simulated_cycles - lastCycle >= batchProcessFreq)) {
+
+            //if (coresInUse < numCPU && (global_simulated_cycles - lastCycle >= batchProcessFreq)) {
                 std::string processName = "process_";
                 if (i < 10) {
                     processName += "0";
@@ -1309,40 +1306,67 @@ void schedulerStart() {
     }
 }
 
-void schedulerStop() {
-    std::cout << "Stopping scheduler and process creation..." << std::endl;
-    
-    processCreationRunning = false;
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    
-    if (scheduler != nullptr && scheduler->isRunning()) {
-        scheduler->stop();
-        
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
-        
-        {
-            std::lock_guard<std::mutex> pLock(processMutex);
-            
-            // Move any remaining running processes to finished
-            for (Process* proc : runningProcesses) {
-                if (proc->hasFinished()) {
-                    finishedProcesses.push_back(proc);
-                } else {
-                    // Mark incomplete processes as finished for clean shutdown
-                    finishedProcesses.push_back(proc);
+/*void schedulerStop() {
+    std::cout << "Stopping new process creation..." << std::endl;
+    std::cout << "Total screens/processes created: " << screenList.size() << std::endl;
+    processCreationRunning = false; // no new processes
+
+    std::thread([]() {
+        while (true) {
+            {
+                std::lock_guard<std::mutex> lock(processMutex);
+                if (runningProcesses.empty()) {
+                    if (scheduler != nullptr && scheduler->isRunning()) {
+                        scheduler->stop();
+                    }
+                    schedulerRunning = false; // scheduler is done
                 }
             }
-            
-            runningProcesses.clear();
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
-        
-        std::cout << "Total screens/processes created: " << screenList.size() << std::endl;
-    } else {
-        std::cout << "Scheduler is not running." << std::endl;
-    }
+    }).detach();
+
     
-    schedulerRunning = false;
 }
+*/
+
+void schedulerStop() {
+    std::cout << "Stopping new process creation..." << std::endl;
+    std::cout << "Total screens/processes created: " << screenList.size() << std::endl;
+    
+    processCreationRunning = false;
+
+    // Detach any dangling CPU/process creation loops (if running)
+    std::thread([]() {
+        while (true) {
+            bool allDone = true;
+
+            {
+                std::lock_guard<std::mutex> lock(processMutex);
+                for(const auto& proc : allProcesses) {
+                    if (!proc->hasFinished()) {
+                        allDone = false;
+                        break;
+                    }
+                }
+            }
+
+            if (allDone) {
+                if (scheduler != nullptr && scheduler->isRunning()) {
+                    scheduler->stop();
+                }
+
+                schedulerRunning = false;
+                std::cout << "\nAll processes are done running.\n";  // Explicit final log
+                break;
+            }
+
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+    }).detach();
+}
+
+
 
 void reportUtil() {    
     std::ofstream outFile("csopesy-log.txt");
@@ -1396,8 +1420,9 @@ void reportUtil() {
 
 void menu() {
     std::string input;
+    bool menuRunning = true;
     intro();
-    while (true) {
+    while (menuRunning) {
         
         setColor(7);
         std::cout << "\nroot:\\> ";
@@ -1409,6 +1434,7 @@ void menu() {
                 scheduler->stop();
                 delete scheduler;
             }
+            menuRunning = false;
             std::cout << "Thank you for using the program";
             exit(0);
         }
