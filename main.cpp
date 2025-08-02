@@ -56,7 +56,7 @@ uint64_t maxIns;
 uint64_t delaysPerExec; //1 instruction every x cycles (0 - 2^32 inclusive) if 0, it executes every cycle
 uint16_t maxOverallMem;
 uint16_t memPerFrame;
-uint16_t memPerProc; //remove soon
+uint16_t memPerProc;
 uint16_t minMemPerProc; //minimum memory per process
 uint16_t maxMemPerProc; //maximum memory per process
 uint16_t totalFrames = 0;
@@ -103,7 +103,6 @@ bool readConfig(){
     bool outOfRangeDelay = false;
     bool outOfRangeMaxMem = false;
     bool outOfRangeMemPerFrame = false;
-    bool outOfRangeMemPerProc = false; //remove
     bool outOfRangeMinMemPerProc = false;
     bool outOfRangeMaxMemPerProc = false;
 
@@ -185,13 +184,6 @@ bool readConfig(){
                 std::cout << "Error: mem-per-frame must be between 1 and 4294967296 (inclusive). Please reconfigure config.txt." << std::endl;
             }
         }
-        else if (key == "mem-per-proc"){
-            iss >> memPerProc;
-            if (memPerProc < 1 || memPerProc > 4294967296){
-                outOfRangeMemPerProc = true;
-                std::cout << "Error: mem-per-proc must be between 1 and 4294967296 (inclusive). Please reconfigure config.txt." << std::endl;
-            }
-        }
         else if (key == "min-mem-per-proc"){
             iss >> minMemPerProc;
             if (((isValidMemorySize(minMemPerProc)) == false)){
@@ -220,7 +212,7 @@ bool readConfig(){
         }
 
     }
-    if (outOfRangeCPU || outOfRangeScheduler || outOfRangeQuantum || outOfRangeBatch || outOfRangeMin || outOfRangeMax || outOfRangeDelay || outOfRangeMaxMem || outOfRangeMemPerFrame || outOfRangeMemPerProc || outOfRangeMinMemPerProc || outOfRangeMaxMemPerProc)
+    if (outOfRangeCPU || outOfRangeScheduler || outOfRangeQuantum || outOfRangeBatch || outOfRangeMin || outOfRangeMax || outOfRangeDelay || outOfRangeMaxMem || outOfRangeMemPerFrame || outOfRangeMinMemPerProc || outOfRangeMaxMemPerProc)
         return false;
     totalFrames = maxOverallMem / memPerFrame;
     memoryBlock = std::vector<bool>(totalFrames, false); // Initialize memory usage tracking
@@ -757,6 +749,7 @@ public:
                 processQueue.pop();
 
                 if(processToExecute -> getMemoryStartIndex() == -1){
+                    memPerProc = getMemorySize();
                     int framesNeeded = memPerProc / memPerFrame;
                     int memIndex = allocateMemory(framesNeeded);
                     
@@ -1312,10 +1305,7 @@ void processCreationLoop() {
                 std::lock_guard<std::mutex> lock(processMutex);
                 activeProcessCount = runningProcesses.size();
             }
-
-            if (activeProcessCount < 4 && (global_simulated_cycles - lastCycle >= batchProcessFreq)) {
-
-            //if (coresInUse < numCPU && (global_simulated_cycles - lastCycle >= batchProcessFreq)) {
+            if (coresInUse < numCPU && (global_simulated_cycles - lastCycle >= batchProcessFreq)) {
                 std::string processName = "process_";
                 if (i < 10) {
                     processName += "0";
