@@ -15,7 +15,6 @@
 #include <condition_variable>
 #include <memory>
 #include <bits/stdc++.h>
-#include <iomanip> 
 #include <list>
 #include <map>
 #include <cstdint>
@@ -34,11 +33,18 @@ std::vector<Process*> runningProcesses;
 std::vector<Process*> finishedProcesses;
 Scheduler* scheduler = nullptr;
 std::mutex processMutex;
+
+//new additon, remove when seen
+std::mutex memoryMutex;
+
 std::atomic<bool> schedulerRunning{false};
 std::atomic<int> processIdCounter{1};
 std::atomic<long long> global_simulated_cycles{0}; // Global variable to track simulated cycles
 std::atomic<bool> processCreationRunning{false}; 
 std::atomic<int> autoProcessCounter{0}; //for tracking auto-generated screen names
+
+//NEW
+std::vector<bool> memoryBlock; //true = used, false = free
 
 //FOR CONFIG.txt
 int numCPU; //number of cores (between 1-128 inclusive)
@@ -48,7 +54,10 @@ uint64_t batchProcessFreq; //1 process every x cycles (1-2^32 inclusive)
 uint64_t minIns;
 uint64_t maxIns;
 uint64_t delaysPerExec; //1 instruction every x cycles (0 - 2^32 inclusive) if 0, it executes every cycle
-
+uint64_t maxOverallMem;
+uint64_t memPerFrame;
+uint64_t memPerProc;
+uint64_t totalFrames = 0;
 bool initialized = false;
 
 //Instruction Types
@@ -77,6 +86,10 @@ bool readConfig(){
     bool outOfRangeMin = false;
     bool outOfRangeMax = false;
     bool outOfRangeDelay = false;
+    bool outOfRangeMaxMem = false;
+    bool outOfRangeMemPerFrame = false;
+    bool outOfRangeMemPerProc = false;
+    
     while(std::getline(file, line)){
         std::istringstream iss(line);
         std::string key;
@@ -137,17 +150,87 @@ bool readConfig(){
         else if (key == "delays-per-exec") {
             iss >> delaysPerExec;
             if (delaysPerExec < 0 || delaysPerExec > 4294967296){
-                delaysPerExec = true;
+                outOfRangeDelay = true;
                 std::cout << "Error: delays-per-exec must be between 0 and 4294967296 (inclusive). Please reconfigure config.txt." << std::endl;
             }
         }
-        
+        else if (key == "max-overall-mem"){
+            iss >> maxOverallMem;
+            if (maxOverallMem < 1 || maxOverallMem > 4294967296){
+                outOfRangeMaxMem = true;
+                std::cout << "Error: max-overall-mem must be between 1 and 4294967296 (inclusive). Please reconfigure config.txt." << std::endl;
+            }
+        }
+        else if (key == "mem-per-frame"){
+            iss >> memPerFrame;
+            if (memPerFrame < 1 || memPerFrame > 4294967296){
+                outOfRangeMemPerFrame = true;
+                std::cout << "Error: mem-per-frame must be between 1 and 4294967296 (inclusive). Please reconfigure config.txt." << std::endl;
+            }
+        }
+        else if (key == "mem-per-proc"){
+            iss >> memPerProc;
+            if (memPerProc < 1 || memPerProc > 4294967296){
+                outOfRangeMemPerProc = true;
+                std::cout << "Error: mem-per-proc must be between 1 and 4294967296 (inclusive). Please reconfigure config.txt." << std::endl;
+            }
+        }
 
     }
     if (outOfRangeCPU || outOfRangeScheduler || outOfRangeQuantum || outOfRangeBatch || outOfRangeMin || outOfRangeMax || outOfRangeDelay)
         return false;
+    totalFrames = maxOverallMem / memPerFrame;
+    memoryBlock = std::vector<bool>(totalFrames, false); // Initialize memory usage tracking
     return true;
 }
+
+//NEW
+int allocateMemory (int framesNeeded){
+    std::lock_guard<std::mutex> lock(memoryMutex);
+    int start = -1;
+    int count = 0;
+
+    for (int i=0; i<totalFrames; ++i) {
+        if (!memoryBlock[i]) {
+            if (count == 0)
+                start = i;
+            count++;
+            if (count == framesNeeded) {
+                // Allocate frames
+                for (int j = start; j < start + framesNeeded; ++j) {
+                    memoryBlock[j] = true;
+                }
+                return start; // Return the starting index of allocated frames
+            }
+        }
+        else{
+            count = 0; // Reset count if a used frame is encountered
+        }
+    }
+    return -1; // Not enough memory available
+}
+
+//NEW
+void freeMemory(int startIndex, int frames) {
+    std::lock_guard<std::mutex> lock(memoryMutex);
+    for (int i = startIndex; i < startIndex + frames; ++i)
+        memoryBlock[i] = false;
+}
+
+//NEW
+int countExternalFragmentation() {
+    std::lock_guard<std::mutex> lock(memoryMutex);
+    int freeFrames = 0;
+
+    for(bool bit: memoryBlock) {
+        if (!bit) {
+            freeFrames++;
+        }
+    }
+
+    return (freeFrames * memPerFrame); // Return in KB
+}
+
 
 // Process class
 class Process {
@@ -168,7 +251,9 @@ private:
     std::atomic<uint64_t> sleepUntilCycle{0}; // for applying sleep to a process
     std::vector<int> forLoopCounters; // Stack for nested for loops
     std::vector<int> forLoopMaxRepeats; 
-
+    //NEW
+    int memoryStartIndex = -1;
+    int framesAllocated = 0;
 
 public:
     // Constructor
@@ -226,7 +311,19 @@ public:
             logFile->close();
         }
     }
-
+    //NEW
+    int getMemoryStartIndex() const {
+        return memoryStartIndex;
+    }
+    //NEW
+    int getFramesAllocated() const {
+        return framesAllocated;
+    }
+    //NEW
+    void setMemoryAllocation(int startIndex, int frames) {
+        memoryStartIndex = startIndex;
+        framesAllocated = frames;
+    }
     // for instructions not sureee
     void generateRandomInstructions(int numInstructions, int depth = 0) {
         instructions.clear();
@@ -401,11 +498,78 @@ public:
     const std::vector<std::string>& getLogs() const { return logs; }
 };
 
+// NEW: Function to dump memory status to a file
+void dumpMemoryStatus(uint64_t curCycle) {
+    std::string filename = "memory_stamp_" + std::to_string(curCycle) + ".txt";
+    std::ofstream outFile(filename);
+    if (!outFile.is_open()) return;
+
+    // Timestamp
+    auto t = std::time(nullptr);
+    auto tm = *std::localtime(&t);
+    char timestamp[100];
+    std::strftime(timestamp, sizeof(timestamp), "%m/%d/%Y %I:%M:%S%p", &tm);
+
+    // Count processes in memory
+    int procInMem = 0;
+    {
+        std::lock_guard<std::mutex> lock(processMutex);
+        for (const auto& p : runningProcesses)
+            if (p->getMemoryStartIndex() != -1) procInMem++;
+    }
+
+    int fragKB = countExternalFragmentation();
+
+    outFile << "Timestamp: (" << timestamp << ")\n";
+    outFile << "Number of processes in memory: " << procInMem << "\n";
+    outFile << "Total external fragmentation in KB: " << fragKB << "\n\n";
+
+    outFile << "----end---- = " << maxOverallMem << "\n";
+
+    // Collect process layout
+    struct MemoryEntry {
+        int lower;
+        int upper;
+        std::string name;
+    };
+
+    std::vector<MemoryEntry> memLayout;
+
+    {
+        std::lock_guard<std::mutex> lock(processMutex);
+        for (const auto& p : runningProcesses) {
+            if (p->getMemoryStartIndex() != -1) {
+                int start = p->getMemoryStartIndex() * memPerFrame;
+                int end = start + (p->getFramesAllocated() * memPerFrame);
+                memLayout.push_back({start, end, p->getName()});
+            }
+        }
+    }
+
+    // Sort from top to bottom (descending upper address)
+    std::sort(memLayout.begin(), memLayout.end(), [](const MemoryEntry& a, const MemoryEntry& b) {
+        return a.upper > b.upper;
+    });
+
+    for (const auto& entry : memLayout) {
+        outFile << entry.upper << "\n";
+        outFile << entry.name << "\n";
+        outFile << entry.lower << "\n\n";
+    }
+
+    outFile << "----start---- = 0\n";
+
+    outFile.close();
+}
+
+
 void cpuCycleLoop() {
     while (schedulerRunning) {
         global_simulated_cycles++;
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        
+        if(global_simulated_cycles % quantumCycles == 0){
+            dumpMemoryStatus(global_simulated_cycles);
+        }
         if (global_simulated_cycles % 100 == 0) {
             std::this_thread::yield();
         }
@@ -468,7 +632,7 @@ void intro() {
     setColor(7);
     std::cout << "Last updated: ";
     setColor(14);
-    std::cout << "28/06/2025" << std::endl;
+    std::cout << "31/07/2025" << std::endl;
     setColor(7);
     std::cout << "-------------------------------------------------------------------------" << std::endl;
 }
@@ -484,6 +648,7 @@ public:
 };
 
 // FCFS Scheduler class
+//TODO add memory allocator to FCFSScheduler + generation of .txt file (not a prio for week 10)
 class FCFSScheduler : public Scheduler {
 private:
     int numCores; //Number of cores
@@ -576,7 +741,8 @@ public:
     bool isRunning() const override { return running; }
 };
 
-//TODO: Round Robin - FIXED VERSION
+//RR Scheduler Class
+//TODO add memory allocator to FCFSScheduler + generation of .txt file
 class RoundRobinScheduler : public Scheduler {
 private:
     int numCores;
@@ -663,6 +829,18 @@ public:
             // Execute for quantum cycles
             int executedCycles = 0;
             while (executedCycles < quantum && processToExecute->canExecute() && running) {
+                //NEW
+                if(processToExecute -> getMemoryStartIndex() == -1){
+                    int framesNeeded = memPerProc / memPerFrame;
+                    int memIndex = allocateMemory(framesNeeded);
+                    
+                    if(memIndex == -1){
+                        std::lock_guard<std::mutex> lock(queueMutex);
+                        processQueue.push(processToExecute);
+                        continue;
+                    }
+                    processToExecute->setMemoryAllocation(memIndex, framesNeeded);
+                }
                 processToExecute->executeInstruction(coreId);
                 executedCycles++;
                 
@@ -679,6 +857,9 @@ public:
 
             if (processToExecute->hasFinished()) {
                 std::lock_guard<std::mutex> pLock(processMutex);
+                if(processToExecute->getMemoryStartIndex() != -1){
+                    freeMemory(processToExecute->getMemoryStartIndex(), processToExecute->getFramesAllocated());
+                }
                 runningProcesses.erase(std::remove(runningProcesses.begin(), runningProcesses.end(), processToExecute), runningProcesses.end());
                 finishedProcesses.push_back(processToExecute);
             } else if (running) {
@@ -711,6 +892,10 @@ void initialize() {
         std::cout << "Minimum Instructions: " << minIns << std::endl;
         std::cout << "Maximum Instructions: " << maxIns << std::endl;
         std::cout << "Delay per Execution: " << delaysPerExec << std::endl;
+        std::cout << "Max overall memory: " << maxOverallMem << std::endl;
+        std::cout << "Memory per frame: " << memPerFrame << std::endl;
+        std::cout << "Memory per process: " << memPerProc << std::endl;
+        std::cout << "Total frames: " << totalFrames << std::endl;
         std::cout << "-------------------------------------------------------------------------" << std::endl;
         std::cout << "System Initialized. You may now create screens and perform other actions.\n\n";
     }
@@ -1061,7 +1246,15 @@ void processCreationLoop() {
                 coresInUse = usedCores.size();
             }
 
-            if (coresInUse < numCPU && (global_simulated_cycles - lastCycle >= batchProcessFreq)) {
+            int activeProcessCount = 0;
+            {
+                std::lock_guard<std::mutex> lock(processMutex);
+                activeProcessCount = runningProcesses.size();
+            }
+
+            if (activeProcessCount < 4 && (global_simulated_cycles - lastCycle >= batchProcessFreq)) {
+
+            //if (coresInUse < numCPU && (global_simulated_cycles - lastCycle >= batchProcessFreq)) {
                 std::string processName = "process_";
                 if (i < 10) {
                     processName += "0";
@@ -1113,40 +1306,67 @@ void schedulerStart() {
     }
 }
 
-void schedulerStop() {
-    std::cout << "Stopping scheduler and process creation..." << std::endl;
-    
-    processCreationRunning = false;
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    
-    if (scheduler != nullptr && scheduler->isRunning()) {
-        scheduler->stop();
-        
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
-        
-        {
-            std::lock_guard<std::mutex> pLock(processMutex);
-            
-            // Move any remaining running processes to finished
-            for (Process* proc : runningProcesses) {
-                if (proc->hasFinished()) {
-                    finishedProcesses.push_back(proc);
-                } else {
-                    // Mark incomplete processes as finished for clean shutdown
-                    finishedProcesses.push_back(proc);
+/*void schedulerStop() {
+    std::cout << "Stopping new process creation..." << std::endl;
+    std::cout << "Total screens/processes created: " << screenList.size() << std::endl;
+    processCreationRunning = false; // no new processes
+
+    std::thread([]() {
+        while (true) {
+            {
+                std::lock_guard<std::mutex> lock(processMutex);
+                if (runningProcesses.empty()) {
+                    if (scheduler != nullptr && scheduler->isRunning()) {
+                        scheduler->stop();
+                    }
+                    schedulerRunning = false; // scheduler is done
                 }
             }
-            
-            runningProcesses.clear();
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
-        
-        std::cout << "Total screens/processes created: " << screenList.size() << std::endl;
-    } else {
-        std::cout << "Scheduler is not running." << std::endl;
-    }
+    }).detach();
+
     
-    schedulerRunning = false;
 }
+*/
+
+void schedulerStop() {
+    std::cout << "Stopping new process creation..." << std::endl;
+    std::cout << "Total screens/processes created: " << screenList.size() << std::endl;
+    
+    processCreationRunning = false;
+
+    // Detach any dangling CPU/process creation loops (if running)
+    std::thread([]() {
+        while (true) {
+            bool allDone = true;
+
+            {
+                std::lock_guard<std::mutex> lock(processMutex);
+                for(const auto& proc : allProcesses) {
+                    if (!proc->hasFinished()) {
+                        allDone = false;
+                        break;
+                    }
+                }
+            }
+
+            if (allDone) {
+                if (scheduler != nullptr && scheduler->isRunning()) {
+                    scheduler->stop();
+                }
+
+                schedulerRunning = false;
+                std::cout << "\nAll processes are done running.\n";  // Explicit final log
+                break;
+            }
+
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+    }).detach();
+}
+
+
 
 void reportUtil() {    
     std::ofstream outFile("csopesy-log.txt");
@@ -1200,8 +1420,9 @@ void reportUtil() {
 
 void menu() {
     std::string input;
+    bool menuRunning = true;
     intro();
-    while (true) {
+    while (menuRunning) {
         
         setColor(7);
         std::cout << "\nroot:\\> ";
@@ -1213,6 +1434,7 @@ void menu() {
                 scheduler->stop();
                 delete scheduler;
             }
+            menuRunning = false;
             std::cout << "Thank you for using the program";
             exit(0);
         }
