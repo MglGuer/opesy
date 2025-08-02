@@ -54,10 +54,12 @@ uint64_t batchProcessFreq; //1 process every x cycles (1-2^32 inclusive)
 uint64_t minIns;
 uint64_t maxIns;
 uint64_t delaysPerExec; //1 instruction every x cycles (0 - 2^32 inclusive) if 0, it executes every cycle
-uint64_t maxOverallMem;
-uint64_t memPerFrame;
-uint64_t memPerProc;
-uint64_t totalFrames = 0;
+uint16_t maxOverallMem;
+uint16_t memPerFrame;
+uint16_t memPerProc; //remove soon
+uint16_t minMemPerProc; //minimum memory per process
+uint16_t maxMemPerProc; //maximum memory per process
+uint16_t totalFrames = 0;
 bool initialized = false;
 
 //Instruction Types
@@ -76,6 +78,19 @@ struct Instruction {
     std::vector<Instruction> nestedInstructions;
 };
 
+//NEW
+bool isValidMemorySize(uint16_t num){
+    return (num >= 64) && (num <= 65536) && ((num & (num - 1)) == 0);
+}
+
+uint16_t getMemorySize(){
+    int minExponent = static_cast<int>(std::log2(minMemPerProc));
+    int maxExponent = static_cast<int>(std::log2(maxMemPerProc));
+    int range = maxExponent - minExponent + 1;
+    int randomExponent = minExponent + (std::rand() % range);
+    return static_cast<uint16_t>(1 << randomExponent);
+}
+
 bool readConfig(){
     std::ifstream file("config.txt");
     std::string line;
@@ -88,8 +103,10 @@ bool readConfig(){
     bool outOfRangeDelay = false;
     bool outOfRangeMaxMem = false;
     bool outOfRangeMemPerFrame = false;
-    bool outOfRangeMemPerProc = false;
-    
+    bool outOfRangeMemPerProc = false; //remove
+    bool outOfRangeMinMemPerProc = false;
+    bool outOfRangeMaxMemPerProc = false;
+
     while(std::getline(file, line)){
         std::istringstream iss(line);
         std::string key;
@@ -175,9 +192,35 @@ bool readConfig(){
                 std::cout << "Error: mem-per-proc must be between 1 and 4294967296 (inclusive). Please reconfigure config.txt." << std::endl;
             }
         }
+        else if (key == "min-mem-per-proc"){
+            iss >> minMemPerProc;
+            if (((isValidMemorySize(minMemPerProc)) == false)){
+                outOfRangeMinMemPerProc = true;
+                std::cout << "Error: min-mem-per-proc must be a power of two between 64 and 65536 (inclusive). Please reconfigure config.txt." << std::endl;
+            }
+            if (minMemPerProc > maxOverallMem){
+                outOfRangeMinMemPerProc = true;
+                std::cout << "Error: min-mem-per-proc must be less than or equal to max-overall-mem. Please reconfigure config.txt." << std::endl;
+            }
+        }
+        else if (key == "max-mem-per-proc"){
+            iss >> maxMemPerProc;
+            if ((isValidMemorySize(maxMemPerProc)) == false){
+                outOfRangeMaxMem = true;
+                std::cout << "Error: max-mem-per-proc must be a power of two between 64 and 65536 (inclusive). Please reconfigure config.txt." << std::endl;
+            }
+            if (maxMemPerProc < minMemPerProc){
+                outOfRangeMaxMemPerProc = true;
+                std::cout << "Error: max-mem-per-proc must be greater than or equal to min-mem-per-proc. Please reconfigure config.txt." << std::endl;
+            }
+            if (maxMemPerProc > maxOverallMem){
+                outOfRangeMaxMemPerProc = true;
+                std::cout << "Error: max-mem-per-proc must be less than or equal to max-overall-mem. Please reconfigure config.txt." << std::endl;
+            }
+        }
 
     }
-    if (outOfRangeCPU || outOfRangeScheduler || outOfRangeQuantum || outOfRangeBatch || outOfRangeMin || outOfRangeMax || outOfRangeDelay)
+    if (outOfRangeCPU || outOfRangeScheduler || outOfRangeQuantum || outOfRangeBatch || outOfRangeMin || outOfRangeMax || outOfRangeDelay || outOfRangeMaxMem || outOfRangeMemPerFrame || outOfRangeMemPerProc || outOfRangeMinMemPerProc || outOfRangeMaxMemPerProc)
         return false;
     totalFrames = maxOverallMem / memPerFrame;
     memoryBlock = std::vector<bool>(totalFrames, false); // Initialize memory usage tracking
@@ -713,6 +756,19 @@ public:
                 processToExecute = processQueue.front();
                 processQueue.pop();
 
+                if(processToExecute -> getMemoryStartIndex() == -1){
+                    int framesNeeded = memPerProc / memPerFrame;
+                    int memIndex = allocateMemory(framesNeeded);
+                    
+                    if(memIndex == -1){
+                        std::lock_guard<std::mutex> lock(queueMutex);
+                        processQueue.push(processToExecute);
+                        queueCV.notify_all();
+                        continue;
+                    }
+                    processToExecute->setMemoryAllocation(memIndex, framesNeeded);
+                }
+
                 {
                     std::lock_guard<std::mutex> pLock(processMutex);
                     runningProcesses.push_back(processToExecute);
@@ -723,6 +779,9 @@ public:
             processToExecute->setAssignedCore(coreId);
             while (processToExecute->canExecute() && running) {
                 processToExecute->executeInstruction(coreId);
+            }
+            if(processToExecute -> getMemoryStartIndex() != -1){
+                freeMemory(processToExecute->getMemoryStartIndex(), processToExecute->getFramesAllocated());
             }
 
             // Move to finished
@@ -831,6 +890,7 @@ public:
             while (executedCycles < quantum && processToExecute->canExecute() && running) {
                 //NEW
                 if(processToExecute -> getMemoryStartIndex() == -1){
+                    memPerProc = getMemorySize();
                     int framesNeeded = memPerProc / memPerFrame;
                     int memIndex = allocateMemory(framesNeeded);
                     
@@ -894,7 +954,8 @@ void initialize() {
         std::cout << "Delay per Execution: " << delaysPerExec << std::endl;
         std::cout << "Max overall memory: " << maxOverallMem << std::endl;
         std::cout << "Memory per frame: " << memPerFrame << std::endl;
-        std::cout << "Memory per process: " << memPerProc << std::endl;
+        std::cout << "Minimum Memory Per Process: " << minMemPerProc << std::endl;
+        std::cout << "Maximum Memory Per Process: " << maxMemPerProc << std::endl;
         std::cout << "Total frames: " << totalFrames << std::endl;
         std::cout << "-------------------------------------------------------------------------" << std::endl;
         std::cout << "System Initialized. You may now create screens and perform other actions.\n\n";
