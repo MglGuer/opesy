@@ -290,11 +290,14 @@ private:
     int memoryStartIndex = -1;
     int framesAllocated = 0;
 
+    uint16_t requiredMemorySize;
+
 public:
     // Constructor
-    Process(const std::string& processName, int numInstructions = 100) 
+    // update with memory size
+    Process(const std::string& processName, int numInstructions = 100, uint16_t memSize = 0) 
         : name(processName), totalInstructions(numInstructions), 
-          remainingInstructions(numInstructions), currentInstruction(0), assignedCore(-1) {
+          remainingInstructions(numInstructions), currentInstruction(0), assignedCore(-1), requiredMemorySize(memSize) {
         
         id = processIdCounter++;
         
@@ -531,6 +534,8 @@ public:
     
     void setAssignedCore(int core) { assignedCore = core; }
     const std::vector<std::string>& getLogs() const { return logs; }
+
+    uint16_t getRequiredMemorySize() const { return requiredMemorySize; }
 };
 
 // NEW: Function to dump memory status to a file
@@ -749,7 +754,14 @@ public:
                 processQueue.pop();
 
                 if(processToExecute -> getMemoryStartIndex() == -1){
-                    memPerProc = getMemorySize();
+
+                    uint16_t memoryToAllocate = processToExecute->getRequiredMemorySize();
+
+                    // if memory not specified by user
+                    if (memoryToAllocate == 0){
+                        memoryToAllocate = getMemorySize();
+                    }
+                    // memPerProc = getMemorySize();
                     int framesNeeded = memPerProc / memPerFrame;
                     int memIndex = allocateMemory(framesNeeded);
                     
@@ -960,7 +972,7 @@ void initialize() {
 
 Screen curScreen;
 
-void createScreen(std::string &screenName) {
+void createScreen(std::string &screenName, uint16_t memorySize) {
     std::time_t timestamp;
     std::time(&timestamp);
 
@@ -979,7 +991,7 @@ void createScreen(std::string &screenName) {
     screenList.emplace_back(newScreen);
     curScreen = newScreen;
     // Create corresponding process using unique_ptr
-    auto newProcess = std::make_unique<Process>(screenName, instructionCount);
+    auto newProcess = std::make_unique<Process>(screenName, instructionCount, memorySize);
     allProcesses.push_back(std::move(newProcess));
 }
 
@@ -1089,13 +1101,33 @@ void screenLS() {
 
 void screen(std::string &screenCommand) {
     std::istringstream iss(screenCommand);
-    std::string command, option, argument;
+    std::string command, option, argument, memStr;
     iss >> command >> option >> argument;
 
     if(option == "-s" && !argument.empty()) {
         //std::vector<Process*> justCreated; // A temporary list to hold newly created processes
 
-        createScreen(argument);
+        iss >> memStr;
+
+        if (argument.empty() || memStr.empty()) {
+            std::cout << "Usage: screen -s <process_name> <process_memory_size>" << std::endl;
+            return;
+        }
+
+        uint16_t memSize;
+        try {
+            memSize = std::stoul(memStr);
+        } catch (...) {
+            std::cout << "Invalid memory size format." << std::endl;
+            return;
+        }
+        
+        if (!isValidMemorySize(memSize)) {
+            std::cout << "invalid memory allocation" << std::endl;
+            return;
+        }
+
+        createScreen(argument, memSize);
         Process* newProcess = allProcesses.back().get();
 
         if (scheduler && scheduler->isRunning()) {
@@ -1312,7 +1344,7 @@ void processCreationLoop() {
                 }
                 processName += std::to_string(i++);
 
-                createScreen(processName);
+                createScreen(processName, 0);
                 scheduler->addProcess(allProcesses.back().get());
 
                 lastCycle = global_simulated_cycles;
