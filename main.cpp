@@ -44,7 +44,8 @@ std::atomic<bool> processCreationRunning{false};
 std::atomic<int> autoProcessCounter{0}; //for tracking auto-generated screen names
 
 //NEW
-std::vector<bool> memoryBlock; //true = used, false = free
+//std::vector<bool> memoryBlock; //true = used, false = free
+std::map<int, int> memoryBlock; //vector to map
 
 //FOR CONFIG.txt
 int numCPU; //number of cores (between 1-128 inclusive)
@@ -217,7 +218,7 @@ bool readConfig(){
     if (outOfRangeCPU || outOfRangeScheduler || outOfRangeQuantum || outOfRangeBatch || outOfRangeMin || outOfRangeMax || outOfRangeDelay || outOfRangeMaxMem || outOfRangeMemPerFrame || outOfRangeMinMemPerProc || outOfRangeMaxMemPerProc)
         return false;
     totalFrames = maxOverallMem / memPerFrame;
-    memoryBlock = std::vector<bool>(totalFrames, false); // Initialize memory usage tracking
+    //memoryBlock = std::vector<bool>(totalFrames, false); // Initialize memory usage tracking
     return true;
 }
 
@@ -258,12 +259,15 @@ void freeMemory(int startIndex, int frames) {
 int countExternalFragmentation() {
     std::lock_guard<std::mutex> lock(memoryMutex);
     int freeFrames = 0;
+    int last_frame = 0;
 
-    for(bool bit: memoryBlock) {
-        if (!bit) {
-            freeFrames++;
-        }
+    for (auto const& [start, num_frames] : memoryBlock) {
+        freeFrames += (start - last_frame);
+        last_frame = start + num_frames;
     }
+    // add the final free block after the last allocated one
+    freeFrames += (totalFrames - last_frame);
+
 
     return (freeFrames * memPerFrame); // Return in KB
 }
