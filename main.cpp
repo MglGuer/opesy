@@ -69,7 +69,9 @@ enum class InstructionType {
     DECLARE,
     SUBTRACT,
     SLEEP,
-    FOR
+    FOR,
+    READ,
+    WRITE
 };
 
 struct Instruction {
@@ -459,9 +461,14 @@ public:
                     }
                     break;
                 }
+                //symbol table (variables)
                 case InstructionType::DECLARE: {
-                    variables[instr.args[0]] = static_cast<uint16_t>(std::stoul(instr.args[1]));
-                    oss << "Declared " << instr.args[0] << " = " << instr.args[1];
+                    if (variables.size() >= 32){
+                        oss << "Symbol table full." << instr.args[0];
+                    } else {
+                        variables[instr.args[0]] = static_cast<uint16_t>(std::stoul(instr.args[1]));
+                        oss << "Declared " << instr.args[0] << " = " << instr.args[1];
+                    }
                     break;
                 }
                 case InstructionType::ADD: {
