@@ -198,26 +198,25 @@ std::vector<Instruction> parseUserInstructions(const std::string& input) {
             instr.type = InstructionType::SUBTRACT;
             instr.args = {a, b, c};
         } 
-        else if (op == "WRITE") {
-            std::string addr, var;
-            instrStream >> addr >> var;
-            if (addr.empty() || var.empty()) {
-                std::cerr << "Warning: Invalid WRITE instruction: " << token << std::endl;
-                continue;
-            }
-            instr.type = InstructionType::WRITE;
-            instr.args = {addr, var};
-        } 
         else if (op == "READ") {
-            std::string var, addr;
-            instrStream >> var >> addr;
-            if (var.empty() || addr.empty()) {
+            std::string varName, memAddr;
+            instrStream >> varName >> memAddr;
+            if (varName.empty() || memAddr.empty()) {
                 std::cerr << "Warning: Invalid READ instruction: " << token << std::endl;
                 continue;
             }
             instr.type = InstructionType::READ;
-            instr.args = {var, addr};
-        } 
+            instr.args = {varName, memAddr};
+        } else if (op == "WRITE") {
+            std::string memAddr, val;
+            instrStream >> memAddr >> val;
+            if (memAddr.empty() || val.empty()) {
+                std::cerr << "Warning: Invalid WRITE instruction: " << token << std::endl;
+                continue;
+            }
+            instr.type = InstructionType::WRITE;
+            instr.args = {memAddr, val};
+        }
         else if (op == "SLEEP") {
             std::string ticks;
             instrStream >> ticks;
@@ -700,6 +699,71 @@ public:
                     }
                     oss << "Executed a FOR loop.";
                     break;
+                
+                    // READ FUNCTION
+                case InstructionType::READ: {
+                    const std::string& varName = instr.args[0];
+                    const std::string& addrStr = instr.args[1];
+
+                    uint16_t addr = 0;
+                    try {
+                        addr = std::stoi(addrStr, nullptr, 16);     // Parse hex
+                    } catch (...) {
+                    oss << "READ ERROR: Invalid address format: " << addrStr;
+                    break;
+                    }
+
+                    // checks whether the input memory is in range or not
+                    // 0xFFFF is harcoded due to using dynamic memory map. this is a max bounded check
+                    if (addr > 0xFFFF - 1) {
+                        oss << "READ ERROR: Address out of bounds.";
+                        break;
+                    }
+
+                    uint8_t low  = memoryBlock.count(addr)     ? memoryBlock[addr]     : 0;
+                    uint8_t high = memoryBlock.count(addr + 1) ? memoryBlock[addr + 1] : 0;
+
+                    uint16_t value = (high << 8) | low;
+                    variables[varName] = value;
+                    //uint16_t value = (memory[addr + 1] << 8) | memory[addr];
+                    //variables[varName] = value;
+
+                    oss << "READ " << varName << " = mem[" << addrStr << "] -> " << value;
+                    break;
+                    }
+                
+                    // WRITE FUNCTION
+                case InstructionType::WRITE: {
+                    const std::string& addrStr = instr.args[0];
+                    const std::string& valStr = instr.args[1];
+
+                    uint16_t addr = 0;
+                    uint16_t value = 0;
+                    try {
+                        addr = std::stoi(addrStr, nullptr, 16);         //Parse hex address
+                        value = std::stoi(valStr);                      // parse value
+                    } catch (...) {
+                        oss << "WRITE ERROR: Invalid address or value.";
+                        break;
+                    }
+                    
+                    // checks whether the input memory is in range or not 
+                    // 0xFFFF is harcoded due to using dynamic memory map. this is a max bounded check
+                    if (addr > 0xFFFF - 1) {
+                        oss << "WRITE ERROR: Address out of bounds.";
+                        break;
+                    }
+
+                    value = std::min<uint16_t>(value, std::numeric_limits<uint16_t>::max()); // clamp value to uint16_t
+                    memoryBlock[addr]     = static_cast<uint8_t>(value & 0xFF);        // Low byte
+                    memoryBlock[addr + 1] = static_cast<uint8_t>((value >> 8) & 0xFF); // High byte
+                    //memory[addr] = value & 0xFF;
+                    //memory[addr + 1] = (value >> 8) & 0xFF;
+
+                    oss << "WRITE mem[" << addrStr << "] = " << value;
+                    break;
+                }
+
             }
             
             // Log the print command
