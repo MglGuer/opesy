@@ -24,6 +24,8 @@ class Process;
 class Scheduler;
 class FCFSScheduler;
 class RoundRobinScheduler;
+bool accessMemory(Process* proc, int vpn, int curCycle);
+void handlePageFault(Process* proc, int vpn, unsigned long long curCycle);
 
 
 // Global variables
@@ -44,7 +46,8 @@ std::atomic<bool> processCreationRunning{false};
 std::atomic<int> autoProcessCounter{0}; //for tracking auto-generated screen names
 
 //NEW
-std::vector<bool> memoryBlock; //true = used, false = free
+//std::vector<bool> memoryBlock; //true = used, false = free
+std::map<int, int> memoryBlock; //vector to map
 
 //FOR CONFIG.txt
 int numCPU; //number of cores (between 1-128 inclusive)
@@ -54,10 +57,12 @@ uint64_t batchProcessFreq; //1 process every x cycles (1-2^32 inclusive)
 uint64_t minIns;
 uint64_t maxIns;
 uint64_t delaysPerExec; //1 instruction every x cycles (0 - 2^32 inclusive) if 0, it executes every cycle
-uint64_t maxOverallMem;
-uint64_t memPerFrame;
-uint64_t memPerProc;
-uint64_t totalFrames = 0;
+uint16_t maxOverallMem;
+uint16_t memPerFrame;
+uint16_t memPerProc;
+uint16_t minMemPerProc; //minimum memory per process
+uint16_t maxMemPerProc; //maximum memory per process
+uint16_t totalFrames = 0;
 bool initialized = false;
 
 //Instruction Types
@@ -66,8 +71,12 @@ enum class InstructionType {
     ADD,
     DECLARE,
     SUBTRACT,
+    MULTIPLY,
+    DIVIDE,
     SLEEP,
-    FOR
+    FOR,
+    READ,
+    WRITE
 };
 
 struct Instruction {
@@ -75,6 +84,211 @@ struct Instruction {
     std::vector<std::string> args;
     std::vector<Instruction> nestedInstructions;
 };
+
+//for screen -c
+std::vector<Instruction> parseUserInstructions(const std::string& input) {
+    std::vector<Instruction> result;
+    std::istringstream stream(input);
+    std::string token;
+
+    std::cout << "[DEBUG] Full input string: [" << input << "]\n";
+
+    // Split by semicolon
+    while (std::getline(stream, token, ';')) {
+        std::cout << "[DEBUG] Processing token: [" << token << "]\n";
+        
+        // Trim whitespace from token
+        token.erase(0, token.find_first_not_of(" \t\n\r"));
+        token.erase(token.find_last_not_of(" \t\n\r") + 1);
+        
+        if (token.empty()) {
+            std::cout << "[DEBUG] Empty token, skipping\n";
+            continue;
+        }
+        
+        std::istringstream instrStream(token);
+        std::string op;
+        instrStream >> op;
+        
+        // Clean up op: remove leading/trailing spaces, '(' and '\' characters
+        op.erase(std::remove_if(op.begin(), op.end(), [](unsigned char c) {
+            return std::isspace(c) || c == '(' || c == '\\';
+        }), op.end());
+        std::cout << "[DEBUG] Cleaned Operation: [" << op << "]" << std::endl;
+
+
+        std::cout << "[DEBUG] Operation: [" << op << "]\n";
+        
+        Instruction instr;
+        instr.args.clear();
+        
+        if (op == "PRINT") {
+            instr.type = InstructionType::PRINT;
+            
+            // Find the parentheses in the token (not just instrStream)
+            size_t start = token.find('(');
+            size_t end = token.rfind(')');
+            
+            std::cout << "[DEBUG] PRINT token: [" << token << "]\n";
+            std::cout << "[DEBUG] Parentheses at: " << start << " and " << end << "\n";
+
+            if (start != std::string::npos && end != std::string::npos && end > start) {
+                std::string inside = token.substr(start + 1, end - start - 1);
+                std::cout << "[DEBUG] Inside parentheses: [" << inside << "]\n";
+
+                // Unescape \" → "
+                std::string cleaned;
+                bool escape = false;
+                for (char ch : inside) {
+                    if (escape) {
+                        if (ch == '\"') cleaned += '\"';
+                        else {
+                            cleaned += '\\';
+                            cleaned += ch;
+                        }
+                        escape = false;
+                    } else if (ch == '\\') {
+                        escape = true;
+                    } else {
+                        cleaned += ch;
+                    }
+                }
+                if (escape) {
+                    cleaned += '\\';
+                }
+
+                // Trim leading/trailing whitespace
+                cleaned.erase(0, cleaned.find_first_not_of(" \t\n\r"));
+                cleaned.erase(cleaned.find_last_not_of(" \t\n\r") + 1);
+
+                instr.args.push_back(cleaned);
+                std::cout << "[DEBUG] Parsed PRINT argument: [" << cleaned << "]\n";
+            } else {
+                std::cerr << "Warning: Malformed PRINT instruction: " << token << std::endl;
+                continue;
+            }
+        }
+        else if (op == "DECLARE") {
+            std::string var, value;
+            instrStream >> var >> value;
+            if (var.empty() || value.empty()) {
+                std::cerr << "Warning: Invalid DECLARE instruction: " << token << std::endl;
+                continue;
+            }
+            instr.type = InstructionType::DECLARE;
+            instr.args = {var, value};
+            std::cout << "[DEBUG] Parsed DECLARE: " << var << " = " << value << "\n";
+        } 
+        else if (op == "ADD") {
+            std::string a, b, c;
+            instrStream >> a >> b >> c;
+            if (a.empty() || b.empty() || c.empty()) {
+                std::cerr << "Warning: Invalid ADD instruction: " << token << std::endl;
+                continue;
+            }
+            instr.type = InstructionType::ADD;
+            instr.args = {a, b, c};
+            std::cout << "[DEBUG] Parsed ADD: " << a << " = " << b << " + " << c << "\n";
+        } 
+        else if (op == "SUBTRACT") {
+            std::string a, b, c;
+            instrStream >> a >> b >> c;
+            if (a.empty() || b.empty() || c.empty()) {
+                std::cerr << "Warning: Invalid SUBTRACT instruction: " << token << std::endl;
+                continue;
+            }
+            instr.type = InstructionType::SUBTRACT;
+            instr.args = {a, b, c};
+        } 
+        else if (op == "WRITE") {
+            std::string addr, var;
+            instrStream >> addr >> var;
+            if (addr.empty() || var.empty()) {
+                std::cerr << "Warning: Invalid WRITE instruction: " << token << std::endl;
+                continue;
+            }
+            instr.type = InstructionType::WRITE;
+            instr.args = {addr, var};
+        } 
+        else if (op == "READ") {
+            std::string var, addr;
+            instrStream >> var >> addr;
+            if (var.empty() || addr.empty()) {
+                std::cerr << "Warning: Invalid READ instruction: " << token << std::endl;
+                continue;
+            }
+            instr.type = InstructionType::READ;
+            instr.args = {var, addr};
+        } 
+        else if (op == "SLEEP") {
+            std::string ticks;
+            instrStream >> ticks;
+            if (ticks.empty()) {
+                std::cerr << "Warning: Invalid SLEEP instruction: " << token << std::endl;
+                continue;
+            }
+            instr.type = InstructionType::SLEEP;
+            instr.args = {ticks};
+        } 
+        else if (op == "MULTIPLY") {
+            std::string a, b, c;
+            instrStream >> a >> b >> c;
+            if (a.empty() || b.empty() || c.empty()) {
+                std::cerr << "Warning: Invalid MULTIPLY instruction: " << token << std::endl;
+                continue;
+            }
+            instr.type = InstructionType::MULTIPLY;
+            instr.args = {a, b, c};
+        } 
+        else if (op == "DIVIDE") {
+            std::string a, b, c;
+            instrStream >> a >> b >> c;
+            if (a.empty() || b.empty() || c.empty()) {
+                std::cerr << "Warning: Invalid DIVIDE instruction: " << token << std::endl;
+                continue;
+            }
+            instr.type = InstructionType::DIVIDE;
+            instr.args = {a, b, c};
+        } 
+        else {
+            std::cerr << "Warning: Unknown instruction type: " << op << std::endl;
+            continue;
+        }
+        
+        std::cout << "[DEBUG] Adding instruction: " << op << std::endl;
+        result.push_back(instr);
+    }
+
+    std::cout << "[DEBUG] Total instructions parsed: " << result.size() << std::endl;
+    return result;
+}
+
+//NEW
+struct FrameEntry{
+    int processId = -1;
+    int virtualPage = -1;
+    uint64_t lastUsed = 0;
+    bool occupied = false;
+};
+
+std::deque<int> freeFrames;
+std::vector<FrameEntry> frameTable(totalFrames);
+
+std::atomic<uint64_t> numPagedIn = 0;
+std::atomic<uint64_t> numPagedOut = 0;
+//END OF NEW
+//NEW
+bool isValidMemorySize(uint16_t num){
+    return (num >= 64) && (num <= 65536) && ((num & (num - 1)) == 0);
+}
+
+uint16_t getMemorySize(){
+    int minExponent = static_cast<int>(std::log2(minMemPerProc));
+    int maxExponent = static_cast<int>(std::log2(maxMemPerProc));
+    int range = maxExponent - minExponent + 1;
+    int randomExponent = minExponent + (std::rand() % range);
+    return static_cast<uint16_t>(1 << randomExponent);
+}
 
 bool readConfig(){
     std::ifstream file("config.txt");
@@ -88,8 +302,9 @@ bool readConfig(){
     bool outOfRangeDelay = false;
     bool outOfRangeMaxMem = false;
     bool outOfRangeMemPerFrame = false;
-    bool outOfRangeMemPerProc = false;
-    
+    bool outOfRangeMinMemPerProc = false;
+    bool outOfRangeMaxMemPerProc = false;
+
     while(std::getline(file, line)){
         std::istringstream iss(line);
         std::string key;
@@ -114,7 +329,7 @@ bool readConfig(){
         } 
         else if (key == "quantum-cycles") {
             iss >> quantumCycles;
-            if (quantumCycles < 1 || quantumCycles > 4294967296){
+            if (quantumCycles < 0 || quantumCycles > 4294967296){
                 outOfRangeQuantum = true;
                 std::cout << "Error: quantum-cycles must be between 1 and 4294967296 (inclusive). Please reconfigure config.txt." << std::endl;
             }
@@ -168,22 +383,65 @@ bool readConfig(){
                 std::cout << "Error: mem-per-frame must be between 1 and 4294967296 (inclusive). Please reconfigure config.txt." << std::endl;
             }
         }
-        else if (key == "mem-per-proc"){
-            iss >> memPerProc;
-            if (memPerProc < 1 || memPerProc > 4294967296){
-                outOfRangeMemPerProc = true;
-                std::cout << "Error: mem-per-proc must be between 1 and 4294967296 (inclusive). Please reconfigure config.txt." << std::endl;
+        else if (key == "min-mem-per-proc"){
+            iss >> minMemPerProc;
+            if (((isValidMemorySize(minMemPerProc)) == false)){
+                outOfRangeMinMemPerProc = true;
+                std::cout << "Error: min-mem-per-proc must be a power of two between 64 and 65536 (inclusive). Please reconfigure config.txt." << std::endl;
+            }
+            if (minMemPerProc > maxOverallMem){
+                outOfRangeMinMemPerProc = true;
+                std::cout << "Error: min-mem-per-proc must be less than or equal to max-overall-mem. Please reconfigure config.txt." << std::endl;
+            }
+        }
+        else if (key == "max-mem-per-proc"){
+            iss >> maxMemPerProc;
+            if ((isValidMemorySize(maxMemPerProc)) == false){
+                outOfRangeMaxMem = true;
+                std::cout << "Error: max-mem-per-proc must be a power of two between 64 and 65536 (inclusive). Please reconfigure config.txt." << std::endl;
+            }
+            if (maxMemPerProc < minMemPerProc){
+                outOfRangeMaxMemPerProc = true;
+                std::cout << "Error: max-mem-per-proc must be greater than or equal to min-mem-per-proc. Please reconfigure config.txt." << std::endl;
+            }
+            if (maxMemPerProc > maxOverallMem){
+                outOfRangeMaxMemPerProc = true;
+                std::cout << "Error: max-mem-per-proc must be less than or equal to max-overall-mem. Please reconfigure config.txt." << std::endl;
             }
         }
 
     }
-    if (outOfRangeCPU || outOfRangeScheduler || outOfRangeQuantum || outOfRangeBatch || outOfRangeMin || outOfRangeMax || outOfRangeDelay)
+    if (outOfRangeCPU || outOfRangeScheduler || outOfRangeQuantum || outOfRangeBatch || outOfRangeMin || outOfRangeMax || outOfRangeDelay || outOfRangeMaxMem || outOfRangeMemPerFrame || outOfRangeMinMemPerProc || outOfRangeMaxMemPerProc)
         return false;
     totalFrames = maxOverallMem / memPerFrame;
-    memoryBlock = std::vector<bool>(totalFrames, false); // Initialize memory usage tracking
+    //memoryBlock = std::vector<bool>(totalFrames, false); // Initialize memory usage tracking
     return true;
 }
+//NEW
+std::vector<int> readPageFromBackingStore(int pid, int vpn) {
+    std::ifstream in("backing_store.txt");
+    std::string line;
+    while (std::getline(in, line)) {
+        std::istringstream iss(line);
+        int filePid, fileVpn;
+        iss >> filePid >> fileVpn;
+        if (filePid == pid && fileVpn == vpn) {
+            std::vector<int> data;
+            int val;
+            while (iss >> val) data.push_back(val);
+            return data;
+        }
+    }
+    return std::vector<int>(8, 0);  // default page
+}
 
+void writePageToBackingStore(int pid, int vpn, const std::vector<int>& data) {
+    std::ofstream out("backing_store.txt", std::ios::app);
+    out << pid << " " << vpn;
+    for (int val : data) out << " " << val;
+    out << "\n";
+}
+//END OF NEW
 //NEW
 int allocateMemory (int framesNeeded){
     std::lock_guard<std::mutex> lock(memoryMutex);
@@ -221,12 +479,15 @@ void freeMemory(int startIndex, int frames) {
 int countExternalFragmentation() {
     std::lock_guard<std::mutex> lock(memoryMutex);
     int freeFrames = 0;
+    int last_frame = 0;
 
-    for(bool bit: memoryBlock) {
-        if (!bit) {
-            freeFrames++;
-        }
+    for (auto const& [start, num_frames] : memoryBlock) {
+        freeFrames += (start - last_frame);
+        last_frame = start + num_frames;
     }
+    // add the final free block after the last allocated one
+    freeFrames += (totalFrames - last_frame);
+
 
     return (freeFrames * memPerFrame); // Return in KB
 }
@@ -255,11 +516,14 @@ private:
     int memoryStartIndex = -1;
     int framesAllocated = 0;
 
+    uint16_t requiredMemorySize;
+
 public:
     // Constructor
-    Process(const std::string& processName, int numInstructions = 100) 
+    // update with memory size
+    Process(const std::string& processName, int numInstructions = 100, uint16_t memSize = 0) 
         : name(processName), totalInstructions(numInstructions), 
-          remainingInstructions(numInstructions), currentInstruction(0), assignedCore(-1) {
+          remainingInstructions(numInstructions), currentInstruction(0), assignedCore(-1), requiredMemorySize(memSize) {
         
         id = processIdCounter++;
         
@@ -311,6 +575,23 @@ public:
             logFile->close();
         }
     }
+    struct PageTableEntry {
+        int frameIndex = -1;
+        bool present = false;
+        bool dirty = false;
+        uint64_t lastUsed = 0;
+    };
+
+    std::vector<PageTableEntry> pageTable;
+
+    void initPageTable(int numPages) {
+        pageTable.resize(numPages);
+    }
+
+    PageTableEntry& getPage(int vpn) {
+        return pageTable[vpn];
+    }
+
     //NEW
     int getMemoryStartIndex() const {
         return memoryStartIndex;
@@ -384,7 +665,7 @@ public:
     // Execute one instruction of the process
     bool executeInstruction(int coreId) {
         std::lock_guard<std::mutex> lock(processExecutionMutex);
-
+        
         if (global_simulated_cycles < sleepUntilCycle) {
             return true;
         }
@@ -421,9 +702,17 @@ public:
                     }
                     break;
                 }
+                //symbol table (variables)
                 case InstructionType::DECLARE: {
-                    variables[instr.args[0]] = static_cast<uint16_t>(std::stoul(instr.args[1]));
-                    oss << "Declared " << instr.args[0] << " = " << instr.args[1];
+                    if (variables.size() >= 32){
+                        oss << "Symbol table full." << instr.args[0];
+                    } else {
+                        variables[instr.args[0]] = static_cast<uint16_t>(std::stoul(instr.args[1]));
+                        oss << "Declared " << instr.args[0] << " = " << instr.args[1];
+                        int virtualPage = rand() % pageTable.size();
+                        accessMemory(this, virtualPage, global_simulated_cycles);
+                        getPage(virtualPage).dirty = true;
+                    }
                     break;
                 }
                 case InstructionType::ADD: {
@@ -431,6 +720,9 @@ public:
                     uint16_t val3 = variables.count(instr.args[2]) ? variables[instr.args[2]] : static_cast<uint16_t>(std::stoul(instr.args[2]));
                     variables[instr.args[0]] = val2 + val3;
                     oss << "ADD: " << instr.args[0] << " = " << val2 << " + " << val3 << " -> " << variables[instr.args[0]];
+                    int virtualPage = rand() % pageTable.size(); //NEW
+                    accessMemory(this, virtualPage, global_simulated_cycles);
+                    getPage(virtualPage).dirty = true; //END OF NEW
                     break;
                 }
                 case InstructionType::SUBTRACT: {
@@ -439,12 +731,38 @@ public:
                     uint16_t result = (val2 > val3) ? val2 - val3 : 0; // Clamp at 0
                     variables[instr.args[0]] = result;
                     oss << "SUBTRACT: " << instr.args[0] << " = " << val2 << " - " << val3 << " -> " << result;
+                    int virtualPage = rand() % pageTable.size();
+                    accessMemory(this, virtualPage, global_simulated_cycles);
+                    getPage(virtualPage).dirty = true;
                     break;
                 }
                 case InstructionType::SLEEP: {
                     uint8_t sleepTicks = static_cast<uint8_t>(std::stoul(instr.args[0]));
                     sleepUntilCycle = global_simulated_cycles + sleepTicks;
                     oss << "Sleeping for " << std::to_string(sleepTicks) << " cycles.";
+                    break;
+                }
+                case InstructionType::MULTIPLY: {
+                    uint16_t val2 = variables.count(instr.args[1]) ? variables[instr.args[1]] : 0;
+                    uint16_t val3 = variables.count(instr.args[2]) ? variables[instr.args[2]] : static_cast<uint16_t>(std::stoul(instr.args[2]));
+                    variables[instr.args[0]] = val2 * val3;
+                    oss << "MULTIPLY: " << instr.args[0] << " = " << val2 << " * " << val3 << " -> " << variables[instr.args[0]];
+                    int virtualPage = rand() % pageTable.size();
+                    accessMemory(this, virtualPage, global_simulated_cycles);
+                    getPage(virtualPage).dirty = true;
+
+                    break;
+                }           
+                case InstructionType::DIVIDE: {
+                    uint16_t val2 = variables.count(instr.args[1]) ? variables[instr.args[1]] : 0;
+                    uint16_t val3 = variables.count(instr.args[2]) ? variables[instr.args[2]] : static_cast<uint16_t>(std::stoul(instr.args[2]));
+                    uint16_t result = (val3 == 0) ? 0 : (val2 / val3);
+                    variables[instr.args[0]] = result;
+                    oss << "DIVIDE: " << instr.args[0] << " = " << val2 << " / " << val3 << " -> " << result;
+                    int virtualPage = rand() % pageTable.size();
+                    accessMemory(this, virtualPage, global_simulated_cycles);
+                    getPage(virtualPage).dirty = true;
+
                     break;
                 }
                 case InstructionType::FOR:
@@ -496,80 +814,123 @@ public:
     
     void setAssignedCore(int core) { assignedCore = core; }
     const std::vector<std::string>& getLogs() const { return logs; }
-};
 
-// NEW: Function to dump memory status to a file
-void dumpMemoryStatus(uint64_t curCycle) {
-    std::string filename = "memory_stamp_" + std::to_string(curCycle) + ".txt";
-    std::ofstream outFile(filename);
-    if (!outFile.is_open()) return;
+    uint16_t getRequiredMemorySize() const { return requiredMemorySize; }
 
-    // Timestamp
-    auto t = std::time(nullptr);
-    auto tm = *std::localtime(&t);
-    char timestamp[100];
-    std::strftime(timestamp, sizeof(timestamp), "%m/%d/%Y %I:%M:%S%p", &tm);
+    void setInstructions(const std::vector<Instruction>& userInstructions) {
+    instructions = userInstructions;
+    totalInstructions = instructions.size();
+    remainingInstructions = totalInstructions;
 
-    // Count processes in memory
-    int procInMem = 0;
-    {
-        std::lock_guard<std::mutex> lock(processMutex);
-        for (const auto& p : runningProcesses)
-            if (p->getMemoryStartIndex() != -1) procInMem++;
     }
+};
+//NEW
+Process* getProcessById(int pid) {
+    std::lock_guard<std::mutex> lock(processMutex);
+    for (auto* p : runningProcesses) {
+        if (p->getId() == pid) {
+            return p;
+        }
+    }
+    return nullptr;
+}
 
-    int fragKB = countExternalFragmentation();
+void handlePageFault(Process* proc, int vpn, unsigned long long curCycle) {
+    int frame = -1;
 
-    outFile << "Timestamp: (" << timestamp << ")\n";
-    outFile << "Number of processes in memory: " << procInMem << "\n";
-    outFile << "Total external fragmentation in KB: " << fragKB << "\n\n";
-
-    outFile << "----end---- = " << maxOverallMem << "\n";
-
-    // Collect process layout
-    struct MemoryEntry {
-        int lower;
-        int upper;
-        std::string name;
-    };
-
-    std::vector<MemoryEntry> memLayout;
-
-    {
-        std::lock_guard<std::mutex> lock(processMutex);
-        for (const auto& p : runningProcesses) {
-            if (p->getMemoryStartIndex() != -1) {
-                int start = p->getMemoryStartIndex() * memPerFrame;
-                int end = start + (p->getFramesAllocated() * memPerFrame);
-                memLayout.push_back({start, end, p->getName()});
+    if (!freeFrames.empty()) {
+        frame = freeFrames.front();
+        freeFrames.pop_front();
+    } else {
+        // LRU Selection
+        uint64_t oldest = UINT64_MAX;
+        int victim = -1;
+        for (int i = 0; i < frameTable.size(); ++i) {
+            if (frameTable[i].occupied && frameTable[i].lastUsed < oldest) {
+                oldest = frameTable[i].lastUsed;
+                victim = i;
             }
+        }
+
+        if (victim != -1) {
+            auto& v = frameTable[victim];
+            auto procPtr = getProcessById(v.processId);
+            if (procPtr) {
+                auto& victimPage = procPtr->getPage(v.virtualPage);
+                if (victimPage.dirty) {
+                    numPagedOut++;
+                    writePageToBackingStore(v.processId, v.virtualPage, std::vector<int>(8, 0));
+                }
+                victimPage.present = false;
+                victimPage.frameIndex = -1;
+            }
+            frame = victim;
         }
     }
 
-    // Sort from top to bottom (descending upper address)
-    std::sort(memLayout.begin(), memLayout.end(), [](const MemoryEntry& a, const MemoryEntry& b) {
-        return a.upper > b.upper;
-    });
+    // Page in
+    numPagedIn++;
+    frameTable[frame] = {proc->getId(), vpn, curCycle, true};
 
-    for (const auto& entry : memLayout) {
-        outFile << entry.upper << "\n";
-        outFile << entry.name << "\n";
-        outFile << entry.lower << "\n\n";
+    auto& newPage = proc->getPage(vpn);
+    newPage.present = true;
+    newPage.frameIndex = frame;
+    newPage.lastUsed = curCycle;
+    newPage.dirty = false;
+}
+
+bool accessMemory(Process* proc, int vpn, int curCycle) {
+    auto& entry = proc->getPage(vpn);
+    if (entry.present) {
+        frameTable[entry.frameIndex].lastUsed = curCycle;
+        entry.lastUsed = curCycle;
+        return true;
+    }
+    handlePageFault(proc, vpn, curCycle);
+    return true;
+}
+//END OF NEW
+
+// NEW: Function to dump memory status to a file
+void printVMStat() {
+    std::lock_guard<std::mutex> lock(processMutex);
+
+    int totalMem = maxOverallMem;  // in bytes
+    int usedMem = 0;
+
+    for (const auto& p : runningProcesses) {
+        if (p->getMemoryStartIndex() != -1) {
+            usedMem += p->getFramesAllocated() * memPerFrame;
+        }
     }
 
-    outFile << "----start---- = 0\n";
+    int freeMem = totalMem - usedMem;
+    int fragKB = countExternalFragmentation();
 
-    outFile.close();
+    // uint64_t idleTicks = 0, activeTicks = 0;
+    // for (const auto& core : cpuCores) {
+    //     idleTicks += core->getIdleTicks();
+    //     activeTicks += core->getActiveTicks();
+    // }
+
+    std::cout << "\n=== VMSTAT ===\n";
+    std::cout << "Total memory      : " << totalMem << " bytes\n";
+    std::cout << "Used memory       : " << usedMem << " bytes\n";
+    std::cout << "Free memory       : " << freeMem << " bytes\n";
+    std::cout << "Total fragmentation: " << fragKB << " KB\n";
+    // std::cout << "Idle CPU ticks    : " << idleTicks << "\n";
+    // std::cout << "Active CPU ticks  : " << activeTicks << "\n";
+    //std::cout << "Num paged in      : " << getTotalPagedIn() << "\n";
+    //std::cout << "Num paged out     : " << getTotalPagedOut() << "\n";
+    std::cout << "=================\n";
 }
+
 
 
 void cpuCycleLoop() {
     while (schedulerRunning) {
         global_simulated_cycles++;
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        if(global_simulated_cycles % quantumCycles == 0){
-            dumpMemoryStatus(global_simulated_cycles);
-        }
         if (global_simulated_cycles % 100 == 0) {
             std::this_thread::yield();
         }
@@ -700,43 +1061,68 @@ public:
     }
 
     void coreWorker(int coreId) {
-        while (running) {
-            Process* processToExecute = nullptr;
+    while (running) {
+        Process* processToExecute = nullptr;
 
-            // Get a process from the queue
-            {
-                std::unique_lock<std::mutex> lock(queueMutex);
-                queueCV.wait(lock, [this]() { return !processQueue.empty() || !running; });
-            
-                if (!running) return;
+        // get the process from the queue
+        {
+            std::unique_lock<std::mutex> lock(queueMutex);
+            queueCV.wait(lock, [this]() { return !processQueue.empty() || !running; });
 
-                processToExecute = processQueue.front();
-                processQueue.pop();
+            if (!running) return;
 
-                {
-                    std::lock_guard<std::mutex> pLock(processMutex);
-                    runningProcesses.push_back(processToExecute);
-                }
-            }
-
-        // Assign process to this core and execute until it's done
-            processToExecute->setAssignedCore(coreId);
-            while (processToExecute->canExecute() && running) {
-                processToExecute->executeInstruction(coreId);
-            }
-
-            // Move to finished
-            {
-                std::lock_guard<std::mutex> pLock(processMutex);
-                runningProcesses.erase(
-                    std::remove_if(runningProcesses.begin(), runningProcesses.end(),
-                        [processToExecute](const Process* p) { return p->getId() == processToExecute->getId(); }),
-                    runningProcesses.end());
-
-                finishedProcesses.push_back(processToExecute);
-            }
+            processToExecute = processQueue.front();
+            processQueue.pop();
         }
-    }   
+
+        if (processToExecute->getMemoryStartIndex() == -1) {
+            uint16_t memoryToAllocate = processToExecute->getRequiredMemorySize();
+            if (memoryToAllocate == 0) {
+                memoryToAllocate = getMemorySize();
+            }
+
+            // fix: Use the correct memory size variable for the calculation
+            int framesNeeded = memoryToAllocate / memPerFrame;
+            int memIndex = allocateMemory(framesNeeded);
+
+            if (memIndex == -1) {
+                {
+                    std::lock_guard<std::mutex> lock(queueMutex);
+                    processQueue.push(processToExecute);
+                }
+                queueCV.notify_all();
+                std::this_thread::sleep_for(std::chrono::milliseconds(100)); // pause to prevent high CPU usage
+                continue;
+            }
+            processToExecute->setMemoryAllocation(memIndex, framesNeeded);
+        }
+        
+        // add to running list
+        {
+            std::lock_guard<std::mutex> pLock(processMutex);
+            runningProcesses.push_back(processToExecute);
+        }
+
+        processToExecute->setAssignedCore(coreId);
+        while (processToExecute->canExecute() && running) {
+            processToExecute->executeInstruction(coreId);
+        }
+        if (processToExecute->getMemoryStartIndex() != -1) {
+            freeMemory(processToExecute->getMemoryStartIndex(), processToExecute->getFramesAllocated());
+        }
+
+        // move to finished
+        {
+            std::lock_guard<std::mutex> pLock(processMutex);
+            runningProcesses.erase(
+                std::remove_if(runningProcesses.begin(), runningProcesses.end(),
+                    [processToExecute](const Process* p) { return p->getId() == processToExecute->getId(); }),
+                runningProcesses.end());
+
+            finishedProcesses.push_back(processToExecute);
+        }
+    }
+} 
     
     bool isRunning() const override { return running; }
 };
@@ -830,8 +1216,10 @@ public:
             int executedCycles = 0;
             while (executedCycles < quantum && processToExecute->canExecute() && running) {
                 //NEW
+                uint16_t memoryToAllocate = processToExecute->getRequiredMemorySize();
                 if(processToExecute -> getMemoryStartIndex() == -1){
-                    int framesNeeded = memPerProc / memPerFrame;
+                    memPerProc = getMemorySize();
+                    int framesNeeded = memoryToAllocate / memPerFrame;
                     int memIndex = allocateMemory(framesNeeded);
                     
                     if(memIndex == -1){
@@ -894,7 +1282,8 @@ void initialize() {
         std::cout << "Delay per Execution: " << delaysPerExec << std::endl;
         std::cout << "Max overall memory: " << maxOverallMem << std::endl;
         std::cout << "Memory per frame: " << memPerFrame << std::endl;
-        std::cout << "Memory per process: " << memPerProc << std::endl;
+        std::cout << "Minimum Memory Per Process: " << minMemPerProc << std::endl;
+        std::cout << "Maximum Memory Per Process: " << maxMemPerProc << std::endl;
         std::cout << "Total frames: " << totalFrames << std::endl;
         std::cout << "-------------------------------------------------------------------------" << std::endl;
         std::cout << "System Initialized. You may now create screens and perform other actions.\n\n";
@@ -906,7 +1295,7 @@ void initialize() {
 
 Screen curScreen;
 
-void createScreen(std::string &screenName) {
+void createScreen(std::string &screenName, uint16_t memorySize) {
     std::time_t timestamp;
     std::time(&timestamp);
 
@@ -925,7 +1314,7 @@ void createScreen(std::string &screenName) {
     screenList.emplace_back(newScreen);
     curScreen = newScreen;
     // Create corresponding process using unique_ptr
-    auto newProcess = std::make_unique<Process>(screenName, instructionCount);
+    auto newProcess = std::make_unique<Process>(screenName, instructionCount, memorySize);
     allProcesses.push_back(std::move(newProcess));
 }
 
@@ -958,7 +1347,62 @@ void manualProcessesScheduler() {
     
 }
 
+// new!
+void processSmi() {
+    std::lock_guard<std::mutex> lock(processMutex);
 
+    std::set<int> usedCores;
+    for (const auto& process : runningProcesses) {
+        if (process->getAssignedCore() != -1) {
+            usedCores.insert(process->getAssignedCore());
+        }
+    }
+
+    int coresUsed = usedCores.size();
+    double cpuUtilization = (numCPU > 0) ? (static_cast<double>(coresUsed) / numCPU * 100.0) : 0.0;
+    
+    uint64_t totalMemoryUsed = 0;
+    for (const auto& process : runningProcesses) {
+        totalMemoryUsed += process->getRequiredMemorySize();
+    }
+
+    double memoryUtilization = (maxOverallMem > 0) ? (static_cast<double>(totalMemoryUsed) / maxOverallMem * 100.0) : 0.0;
+
+    setColor(7);
+    std::cout << "\n----------------------------------------------";
+    std::cout << "\n| PROCESS-SMI V01.00 Driver Version: 01.00 |\n";
+    std::cout << "----------------------------------------------\n";
+    
+    std::cout << std::fixed << std::setprecision(2);
+    
+    setColor(7);
+    std::cout << "CPU-Util: ";
+    setColor(14);
+    std::cout << cpuUtilization << "%\n";
+    
+    setColor(7);
+    std::cout << "Memory Usage: ";
+    setColor(14);
+    std::cout << totalMemoryUsed << "MiB / " << maxOverallMem << "MiB\n";
+    
+    setColor(7);
+    std::cout << "Memory Util: ";
+    setColor(14);
+    std::cout << memoryUtilization << "%\n\n";
+    
+    setColor(7);
+    std::cout << "=====================================\n";
+    std::cout << "Running processes and memory usage:\n";
+    std::cout << "----------------------------------------------\n";
+    for (const auto& process : runningProcesses) {
+        setColor(7);
+        std::cout << process->getName() << " ";
+        setColor(14);
+        std::cout << process->getRequiredMemorySize() << "B\n";
+    }
+    setColor(7);
+    std::cout << "----------------------------------------------";
+}
 
 void screenLS() {
     std::lock_guard<std::mutex> lock(processMutex);
@@ -1035,15 +1479,35 @@ void screenLS() {
 
 void screen(std::string &screenCommand) {
     std::istringstream iss(screenCommand);
-    std::string command, option, argument;
+    std::string command, option, argument, memStr;
     iss >> command >> option >> argument;
 
     if(option == "-s" && !argument.empty()) {
         //std::vector<Process*> justCreated; // A temporary list to hold newly created processes
 
-        createScreen(argument);
-        Process* newProcess = allProcesses.back().get();
+        iss >> memStr;
 
+        if (argument.empty() || memStr.empty()) {
+            std::cout << "Usage: screen -s <process_name> <process_memory_size>" << std::endl;
+            return;
+        }
+
+        uint16_t memSize;
+        try {
+            memSize = std::stoul(memStr);
+        } catch (...) {
+            std::cout << "Invalid memory size format." << std::endl;
+            return;
+        }
+        
+        if (!isValidMemorySize(memSize)) {
+            std::cout << "invalid memory allocation" << std::endl;
+            return;
+        }
+
+        createScreen(argument, memSize);
+        Process* newProcess = allProcesses.back().get();
+        newProcess -> initPageTable(totalFrames);
         if (scheduler && scheduler->isRunning()) {
             scheduler->addProcess(newProcess);
         } else {
@@ -1205,6 +1669,129 @@ void screen(std::string &screenCommand) {
             }
         }
     }
+    else if (option == "-c" && !argument.empty()) {
+        std::string processName = argument;
+        std::string memStr;
+        iss >> memStr;
+
+        if (memStr.empty()) {
+            std::cout << "invalid command" << std::endl;
+            return;
+        }
+
+        uint16_t memSize;
+        try {
+            memSize = static_cast<uint16_t>(std::stoi(memStr));
+        } catch (...) {
+            std::cout << "invalid command" << std::endl;
+            return;
+        }
+
+        if (!isValidMemorySize(memSize)) {
+            std::cout << "invalid command" << std::endl;
+            return;
+        }
+
+        // Get the remaining string (should be quoted)
+        std::string remainingInput;
+        std::getline(iss, remainingInput);
+        std::stringstream quotedStream(remainingInput);
+        std::string instructionsString;
+
+        std::getline(quotedStream, instructionsString, '"'); // Skip first quote
+        std::getline(quotedStream, instructionsString, '"'); // Read the actual content
+
+        if (instructionsString.empty()) {
+            std::cout << "invalid command" << std::endl;
+            return;
+        }
+
+        std::vector<Instruction> parsed = parseUserInstructions(instructionsString);
+        if (parsed.size() < 1 || parsed.size() > 50) {
+            std::cout << "invalid command" << std::endl;
+            return;
+        }
+
+        createScreen(processName, memSize);
+        Process* newProcess = allProcesses.back().get();
+        newProcess -> initPageTable(totalFrames);
+        newProcess->setInstructions(parsed);
+
+        if (scheduler && scheduler->isRunning()) {
+            scheduler->addProcess(newProcess);
+        } else {
+            manualProcessesScheduler();
+        }
+
+        //clearScreen();
+        std::cout << "Screen created: " << newProcess->getName() << std::endl;
+        std::cout << "Instructions: " << newProcess->getCurrentInstruction() << " out of " << newProcess->getTotalInstructions() << std::endl;
+        std::cout << "Time Created: " << newProcess->getTimeCreated() << std::endl;
+
+        std::string screenInput;
+        while (true) {
+            std::cout << "\n" << newProcess->getName() << ":\\> ";
+            std::getline(std::cin, screenInput);
+
+            if (screenInput == "process-smi") {
+                Process* process = nullptr;
+                auto it = std::find_if(allProcesses.begin(), allProcesses.end(),
+                    [&](const std::unique_ptr<Process>& p) { return p->getName() == newProcess->getName(); });
+
+                if (it != allProcesses.end()) {
+                    process = it->get();
+
+                    setColor(7);
+                    std::cout << "\nProcess name: " << process->getName();
+
+                    if (process->hasFinished()) {
+                        std::cout << " Finished!" << std::endl;
+                    } else {
+                        std::cout << std::endl;
+                    }
+
+                    setColor(7);
+                    std::cout << "ID: ";
+                    setColor(14);
+                    std::cout << process->getId() << std::endl;
+
+                    setColor(7);
+                    std::cout << "Time Created: ";
+                    setColor(14);
+                    std::cout << process->getTimeCreated() << std::endl;
+
+                    setColor(7);
+                    std::cout << "Assigned Core: ";
+                    setColor(14);
+                    std::cout << process->getAssignedCore() << std::endl;
+
+                    setColor(7);
+                    std::cout << "Logs:" << std::endl;
+                    for (const auto& logEntry : process->getLogs()) {
+                        std::cout << logEntry << std::endl;
+                    }
+
+                    setColor(7);
+                    std::cout << "\nCurrent instruction line: ";
+                    setColor(14);
+                    std::cout << process->getCurrentInstruction() << std::endl;
+
+                    setColor(7);
+                    std::cout << "Lines of code: ";
+                    setColor(14);
+                    std::cout << process->getTotalInstructions() << "\n";
+
+                    setColor(7);
+                }
+            } else if (screenInput == "exit") {
+                clearScreen();
+                intro();
+                break;
+            } else {
+                std::cout << "Invalid command. You can only use 'process-smi' or 'exit'." << std::endl;
+            }
+        }
+    }
     else if(option == "-d" && !argument.empty()) {
         std::string screenName = argument;
         bool found = false;
@@ -1251,17 +1838,14 @@ void processCreationLoop() {
                 std::lock_guard<std::mutex> lock(processMutex);
                 activeProcessCount = runningProcesses.size();
             }
-
-            if (activeProcessCount < 4 && (global_simulated_cycles - lastCycle >= batchProcessFreq)) {
-
-            //if (coresInUse < numCPU && (global_simulated_cycles - lastCycle >= batchProcessFreq)) {
+            if (coresInUse < numCPU && (global_simulated_cycles - lastCycle >= batchProcessFreq)) {
                 std::string processName = "process_";
                 if (i < 10) {
                     processName += "0";
                 }
                 processName += std::to_string(i++);
 
-                createScreen(processName);
+                createScreen(processName, 0);
                 scheduler->addProcess(allProcesses.back().get());
 
                 lastCycle = global_simulated_cycles;
@@ -1459,6 +2043,13 @@ void menu() {
         }
         else if(command == "report-util") {
             reportUtil();
+        }
+
+        else if(command == "process-smi"){
+            processSmi();
+        }
+        else if(command == "vmstat"){
+            printVMStat();
         }
         else {
             std::cout << "Unknown command. Please try again.\n\n";
