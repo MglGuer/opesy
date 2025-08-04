@@ -1037,7 +1037,62 @@ void manualProcessesScheduler() {
     
 }
 
+// new!
+void processSmi() {
+    std::lock_guard<std::mutex> lock(processMutex);
 
+    std::set<int> usedCores;
+    for (const auto& process : runningProcesses) {
+        if (process->getAssignedCore() != -1) {
+            usedCores.insert(process->getAssignedCore());
+        }
+    }
+
+    int coresUsed = usedCores.size();
+    double cpuUtilization = (numCPU > 0) ? (static_cast<double>(coresUsed) / numCPU * 100.0) : 0.0;
+    
+    uint64_t totalMemoryUsed = 0;
+    for (const auto& process : runningProcesses) {
+        totalMemoryUsed += process->getRequiredMemorySize();
+    }
+
+    double memoryUtilization = (maxOverallMem > 0) ? (static_cast<double>(totalMemoryUsed) / maxOverallMem * 100.0) : 0.0;
+
+    setColor(7);
+    std::cout << "\n----------------------------------------------";
+    std::cout << "\n| PROCESS-SMI V01.00 Driver Version: 01.00 |\n";
+    std::cout << "----------------------------------------------\n";
+    
+    std::cout << std::fixed << std::setprecision(2);
+    
+    setColor(7);
+    std::cout << "CPU-Util: ";
+    setColor(14);
+    std::cout << cpuUtilization << "%\n";
+    
+    setColor(7);
+    std::cout << "Memory Usage: ";
+    setColor(14);
+    std::cout << totalMemoryUsed << "MiB / " << maxOverallMem << "MiB\n";
+    
+    setColor(7);
+    std::cout << "Memory Util: ";
+    setColor(14);
+    std::cout << memoryUtilization << "%\n\n";
+    
+    setColor(7);
+    std::cout << "=====================================\n";
+    std::cout << "Running processes and memory usage:\n";
+    std::cout << "----------------------------------------------\n";
+    for (const auto& process : runningProcesses) {
+        setColor(7);
+        std::cout << process->getName() << " ";
+        setColor(14);
+        std::cout << process->getRequiredMemorySize() << "B\n";
+    }
+    setColor(7);
+    std::cout << "----------------------------------------------";
+}
 
 void screenLS() {
     std::lock_guard<std::mutex> lock(processMutex);
@@ -1555,6 +1610,10 @@ void menu() {
         }
         else if(command == "report-util") {
             reportUtil();
+        }
+
+        else if(command == "process-smi"){
+            processSmi();
         }
         else {
             std::cout << "Unknown command. Please try again.\n\n";
