@@ -106,21 +106,17 @@ std::vector<Instruction> parseUserInstructions(const std::string& input) {
             continue;
         }
         
-        std::istringstream instrStream(token);
         std::string op;
-        instrStream >> op;
-        
-        // Clean up op: remove leading/trailing spaces, '(' and '\' characters
-        op.erase(std::remove_if(op.begin(), op.end(), [](unsigned char c) {
-            return std::isspace(c) || c == '(' || c == '\\';
-        }), op.end());
-        std::cout << "[DEBUG] Cleaned Operation: [" << op << "]" << std::endl;
-
-
-        std::cout << "[DEBUG] Operation: [" << op << "]\n";
+        size_t op_end = token.find_first_of(" (");
+        if (op_end != std::string::npos) {
+            op = token.substr(0, op_end);
+        } else {
+            op = token;
+        }
         
         Instruction instr;
         instr.args.clear();
+        std::cout << "[DEBUG] Operation: [" << op << "]\n";
         
         if (op == "PRINT") {
             instr.type = InstructionType::PRINT;
@@ -169,6 +165,7 @@ std::vector<Instruction> parseUserInstructions(const std::string& input) {
             }
         }
         else if (op == "DECLARE") {
+            std::istringstream instrStream(token.substr(op.length()));
             std::string var, value;
             instrStream >> var >> value;
             if (var.empty() || value.empty()) {
@@ -180,6 +177,7 @@ std::vector<Instruction> parseUserInstructions(const std::string& input) {
             std::cout << "[DEBUG] Parsed DECLARE: " << var << " = " << value << "\n";
         } 
         else if (op == "ADD") {
+            std::istringstream instrStream(token.substr(op.length()));
             std::string a, b, c;
             instrStream >> a >> b >> c;
             if (a.empty() || b.empty() || c.empty()) {
@@ -191,6 +189,7 @@ std::vector<Instruction> parseUserInstructions(const std::string& input) {
             std::cout << "[DEBUG] Parsed ADD: " << a << " = " << b << " + " << c << "\n";
         } 
         else if (op == "SUBTRACT") {
+            std::istringstream instrStream(token.substr(op.length()));
             std::string a, b, c;
             instrStream >> a >> b >> c;
             if (a.empty() || b.empty() || c.empty()) {
@@ -201,6 +200,7 @@ std::vector<Instruction> parseUserInstructions(const std::string& input) {
             instr.args = {a, b, c};
         } 
         else if (op == "WRITE") {
+            std::istringstream instrStream(token.substr(op.length()));
             std::string addr, var;
             instrStream >> addr >> var;
             if (addr.empty() || var.empty()) {
@@ -211,6 +211,7 @@ std::vector<Instruction> parseUserInstructions(const std::string& input) {
             instr.args = {addr, var};
         } 
         else if (op == "READ") {
+            std::istringstream instrStream(token.substr(op.length()));
             std::string var, addr;
             instrStream >> var >> addr;
             if (var.empty() || addr.empty()) {
@@ -221,6 +222,7 @@ std::vector<Instruction> parseUserInstructions(const std::string& input) {
             instr.args = {var, addr};
         } 
         else if (op == "SLEEP") {
+            std::istringstream instrStream(token.substr(op.length()));
             std::string ticks;
             instrStream >> ticks;
             if (ticks.empty()) {
@@ -231,6 +233,7 @@ std::vector<Instruction> parseUserInstructions(const std::string& input) {
             instr.args = {ticks};
         } 
         else if (op == "MULTIPLY") {
+            std::istringstream instrStream(token.substr(op.length()));
             std::string a, b, c;
             instrStream >> a >> b >> c;
             if (a.empty() || b.empty() || c.empty()) {
@@ -241,6 +244,7 @@ std::vector<Instruction> parseUserInstructions(const std::string& input) {
             instr.args = {a, b, c};
         } 
         else if (op == "DIVIDE") {
+            std::istringstream instrStream(token.substr(op.length()));
             std::string a, b, c;
             instrStream >> a >> b >> c;
             if (a.empty() || b.empty() || c.empty()) {
@@ -274,8 +278,8 @@ struct FrameEntry{
 std::deque<int> freeFrames;
 std::vector<FrameEntry> frameTable(totalFrames);
 
-std::atomic<uint64_t> numPagedIn = 0;
-std::atomic<uint64_t> numPagedOut = 0;
+std::atomic<uint64_t> numPagedIn{0};
+std::atomic<uint64_t> numPagedOut{0};
 //END OF NEW
 //NEW
 bool isValidMemorySize(uint16_t num){
@@ -548,7 +552,9 @@ public:
           remainingInstructions(other.remainingInstructions), currentInstruction(other.currentInstruction),
           timeCreated(std::move(other.timeCreated)), assignedCore(other.assignedCore),
           logFile(std::move(other.logFile)), instructions(std::move(other.instructions)),
-          variables(std::move(other.variables)), sleepUntilCycle(other.sleepUntilCycle.load()) {
+          variables(std::move(other.variables)),
+          cyclesSinceLastExec(other.cyclesSinceLastExec.load()),
+          sleepUntilCycle(other.sleepUntilCycle.load()) {
     }
     
     // Move assignment operator
@@ -564,6 +570,7 @@ public:
             logFile = std::move(other.logFile);
             instructions = std::move(other.instructions);
             variables = std::move(other.variables);
+            cyclesSinceLastExec.store(other.cyclesSinceLastExec.load());
             sleepUntilCycle.store(other.sleepUntilCycle.load());
         }
         return *this;
@@ -1630,8 +1637,8 @@ void screen(std::string &screenCommand) {
 
         if (found) {
             std::string screenInput;
-            while(screenInput != "exit") {
-                std::cout << "\nroot:\\> ";
+            while(true) {
+                std::cout << "\n" << curScreen.screenName << ":\\> ";
                 std::getline(std::cin, screenInput);
                 if(screenInput == "process-smi") {
                     auto it = std::find_if(allProcesses.begin(), allProcesses.end(),
@@ -1693,14 +1700,16 @@ void screen(std::string &screenCommand) {
         }
 
         // Get the remaining string (should be quoted)
-        std::string remainingInput;
-        std::getline(iss, remainingInput);
-        std::stringstream quotedStream(remainingInput);
         std::string instructionsString;
+        std::getline(iss >> std::ws, instructionsString);
 
-        std::getline(quotedStream, instructionsString, '"'); // Skip first quote
-        std::getline(quotedStream, instructionsString, '"'); // Read the actual content
-
+        if (instructionsString.length() >= 2 && instructionsString.front() == '"' && instructionsString.back() == '"') {
+            instructionsString = instructionsString.substr(1, instructionsString.length() - 2);
+        } else {
+            std::cout << "invalid command: instructions must be enclosed in double quotes" << std::endl;
+            return;
+        }
+        
         if (instructionsString.empty()) {
             std::cout << "invalid command" << std::endl;
             return;
@@ -2011,7 +2020,11 @@ void menu() {
         setColor(7);
         std::cout << "\nroot:\\> ";
         std::string command;
-        std::getline(std::cin >> std::ws, command);
+        std::getline(std::cin, command);
+
+        if (command.empty()) {
+            continue;
+        }
 
         if(command == "exit") {
             if (scheduler != nullptr) {
