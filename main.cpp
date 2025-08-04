@@ -69,6 +69,8 @@ enum class InstructionType {
     ADD,
     DECLARE,
     SUBTRACT,
+    MULTIPLY,
+    DIVIDE,
     SLEEP,
     FOR,
     READ,
@@ -80,6 +82,119 @@ struct Instruction {
     std::vector<std::string> args;
     std::vector<Instruction> nestedInstructions;
 };
+
+//for screen -c
+std::vector<Instruction> parseUserInstructions(const std::string& input) {
+    std::vector<Instruction> result;
+    std::istringstream stream(input);
+    std::string token;
+
+    while (std::getline(stream, token, ';')) {
+        std::istringstream instrStream(token);
+        std::string op;
+        instrStream >> op;
+
+        Instruction instr;
+        instr.args.clear();
+
+        if (op == "PRINT") {
+            instr.type = InstructionType::PRINT;
+            std::string remainder;
+            std::getline(instrStream, remainder);
+            auto start = remainder.find('(');
+            auto end = remainder.rfind(')');
+            if (start != std::string::npos && end != std::string::npos && end > start) {
+                std::string inner = remainder.substr(start + 1, end - start - 1);
+                instr.args.push_back(inner);
+            } 
+            else {
+                std::cerr << "Warning: Malformed PRINT instruction: " << token << std::endl;
+                continue;
+            }
+
+        } else if (op == "DECLARE") {
+            std::string var, value;
+            instrStream >> var >> value;
+            if (var.empty() || value.empty()) {
+                std::cerr << "Warning: Invalid DECLARE instruction: " << token << std::endl;
+                continue;
+            }
+            instr.type = InstructionType::DECLARE;
+            instr.args = {var, value};
+        } else if (op == "ADD") {
+            std::string a, b, c;
+            instrStream >> a >> b >> c;
+            if (a.empty() || b.empty() || c.empty()) {
+                std::cerr << "Warning: Invalid ADD instruction: " << token << std::endl;
+                continue;
+            }
+            instr.type = InstructionType::ADD;
+            instr.args = {a, b, c};
+        } else if (op == "SUBTRACT") {
+            std::string a, b, c;
+            instrStream >> a >> b >> c;
+            if (a.empty() || b.empty() || c.empty()) {
+                std::cerr << "Warning: Invalid SUBTRACT instruction: " << token << std::endl;
+                continue;
+            }
+            instr.type = InstructionType::SUBTRACT;
+            instr.args = {a, b, c};
+        } else if (op == "WRITE") {
+            std::string addr, var;
+            instrStream >> addr >> var;
+            if (addr.empty() || var.empty()) {
+                std::cerr << "Warning: Invalid WRITE instruction: " << token << std::endl;
+                continue;
+            }
+            instr.type = InstructionType::WRITE;
+            instr.args = {addr, var};
+        } else if (op == "READ") {
+            std::string var, addr;
+            instrStream >> var >> addr;
+            if (var.empty() || addr.empty()) {
+                std::cerr << "Warning: Invalid READ instruction: " << token << std::endl;
+                continue;
+            }
+            instr.type = InstructionType::READ;
+            instr.args = {var, addr};
+        } else if (op == "SLEEP") {
+            std::string ticks;
+            instrStream >> ticks;
+            if (ticks.empty()) {
+                std::cerr << "Warning: Invalid SLEEP instruction: " << token << std::endl;
+                continue;
+            }
+            instr.type = InstructionType::SLEEP;
+            instr.args = {ticks};
+        } else if (op == "MULTIPLY") {
+            std::string a, b, c;
+            instrStream >> a >> b >> c;
+            if (a.empty() || b.empty() || c.empty()) {
+                std::cerr << "Warning: Invalid MULTIPLY instruction: " << token << std::endl;
+                continue;
+            }
+            instr.type = InstructionType::MULTIPLY;
+            instr.args = {a, b, c};
+        } else if (op == "DIVIDE") {
+            std::string a, b, c;
+            instrStream >> a >> b >> c;
+            if (a.empty() || b.empty() || c.empty()) {
+                std::cerr << "Warning: Invalid DIVIDE instruction: " << token << std::endl;
+                continue;
+            }
+            instr.type = InstructionType::DIVIDE;
+            instr.args = {a, b, c};
+        } else {
+            std::cerr << "Warning: Unknown instruction type: " << op << std::endl;
+            continue;
+        }
+        std::cout << "Parsed instruction: " << op << std::endl;
+
+        result.push_back(instr);
+    }
+
+    return result;
+}
 
 //NEW
 bool isValidMemorySize(uint16_t num){
@@ -496,6 +611,21 @@ public:
                     oss << "Sleeping for " << std::to_string(sleepTicks) << " cycles.";
                     break;
                 }
+                case InstructionType::MULTIPLY: {
+                    uint16_t val2 = variables.count(instr.args[1]) ? variables[instr.args[1]] : 0;
+                    uint16_t val3 = variables.count(instr.args[2]) ? variables[instr.args[2]] : static_cast<uint16_t>(std::stoul(instr.args[2]));
+                    variables[instr.args[0]] = val2 * val3;
+                    oss << "MULTIPLY: " << instr.args[0] << " = " << val2 << " * " << val3 << " -> " << variables[instr.args[0]];
+                    break;
+                }           
+                case InstructionType::DIVIDE: {
+                    uint16_t val2 = variables.count(instr.args[1]) ? variables[instr.args[1]] : 0;
+                    uint16_t val3 = variables.count(instr.args[2]) ? variables[instr.args[2]] : static_cast<uint16_t>(std::stoul(instr.args[2]));
+                    uint16_t result = (val3 == 0) ? 0 : (val2 / val3);
+                    variables[instr.args[0]] = result;
+                    oss << "DIVIDE: " << instr.args[0] << " = " << val2 << " / " << val3 << " -> " << result;
+                    break;
+                }
                 case InstructionType::FOR:
                     // This is a simplified placeholder. A full implementation would require more complex state management.
                     // For now, we just execute the nested instructions.
@@ -547,71 +677,78 @@ public:
     const std::vector<std::string>& getLogs() const { return logs; }
 
     uint16_t getRequiredMemorySize() const { return requiredMemorySize; }
+
+    void setInstructions(const std::vector<Instruction>& userInstructions) {
+    instructions = userInstructions;
+    totalInstructions = instructions.size();
+    remainingInstructions = totalInstructions;
+
+    }
 };
 
 // NEW: Function to dump memory status to a file
-void dumpMemoryStatus(uint64_t curCycle) {
-    std::string filename = "memory_stamp_" + std::to_string(curCycle) + ".txt";
-    std::ofstream outFile(filename);
-    if (!outFile.is_open()) return;
+// void dumpMemoryStatus(uint64_t curCycle) {
+//     std::string filename = "memory_stamp_" + std::to_string(curCycle) + ".txt";
+//     std::ofstream outFile(filename);
+//     if (!outFile.is_open()) return;
 
-    // Timestamp
-    auto t = std::time(nullptr);
-    auto tm = *std::localtime(&t);
-    char timestamp[100];
-    std::strftime(timestamp, sizeof(timestamp), "%m/%d/%Y %I:%M:%S%p", &tm);
+//     // Timestamp
+//     auto t = std::time(nullptr);
+//     auto tm = *std::localtime(&t);
+//     char timestamp[100];
+//     std::strftime(timestamp, sizeof(timestamp), "%m/%d/%Y %I:%M:%S%p", &tm);
 
-    // Count processes in memory
-    int procInMem = 0;
-    {
-        std::lock_guard<std::mutex> lock(processMutex);
-        for (const auto& p : runningProcesses)
-            if (p->getMemoryStartIndex() != -1) procInMem++;
-    }
+//     // Count processes in memory
+//     int procInMem = 0;
+//     {
+//         std::lock_guard<std::mutex> lock(processMutex);
+//         for (const auto& p : runningProcesses)
+//             if (p->getMemoryStartIndex() != -1) procInMem++;
+//     }
 
-    int fragKB = countExternalFragmentation();
+//     int fragKB = countExternalFragmentation();
 
-    outFile << "Timestamp: (" << timestamp << ")\n";
-    outFile << "Number of processes in memory: " << procInMem << "\n";
-    outFile << "Total external fragmentation in KB: " << fragKB << "\n\n";
+//     outFile << "Timestamp: (" << timestamp << ")\n";
+//     outFile << "Number of processes in memory: " << procInMem << "\n";
+//     outFile << "Total external fragmentation in KB: " << fragKB << "\n\n";
 
-    outFile << "----end---- = " << maxOverallMem << "\n";
+//     outFile << "----end---- = " << maxOverallMem << "\n";
 
-    // Collect process layout
-    struct MemoryEntry {
-        int lower;
-        int upper;
-        std::string name;
-    };
+//     // Collect process layout
+//     struct MemoryEntry {
+//         int lower;
+//         int upper;
+//         std::string name;
+//     };
 
-    std::vector<MemoryEntry> memLayout;
+//     std::vector<MemoryEntry> memLayout;
 
-    {
-        std::lock_guard<std::mutex> lock(processMutex);
-        for (const auto& p : runningProcesses) {
-            if (p->getMemoryStartIndex() != -1) {
-                int start = p->getMemoryStartIndex() * memPerFrame;
-                int end = start + (p->getFramesAllocated() * memPerFrame);
-                memLayout.push_back({start, end, p->getName()});
-            }
-        }
-    }
+//     {
+//         std::lock_guard<std::mutex> lock(processMutex);
+//         for (const auto& p : runningProcesses) {
+//             if (p->getMemoryStartIndex() != -1) {
+//                 int start = p->getMemoryStartIndex() * memPerFrame;
+//                 int end = start + (p->getFramesAllocated() * memPerFrame);
+//                 memLayout.push_back({start, end, p->getName()});
+//             }
+//         }
+//     }
 
-    // Sort from top to bottom (descending upper address)
-    std::sort(memLayout.begin(), memLayout.end(), [](const MemoryEntry& a, const MemoryEntry& b) {
-        return a.upper > b.upper;
-    });
+//     // Sort from top to bottom (descending upper address)
+//     std::sort(memLayout.begin(), memLayout.end(), [](const MemoryEntry& a, const MemoryEntry& b) {
+//         return a.upper > b.upper;
+//     });
 
-    for (const auto& entry : memLayout) {
-        outFile << entry.upper << "\n";
-        outFile << entry.name << "\n";
-        outFile << entry.lower << "\n\n";
-    }
+//     for (const auto& entry : memLayout) {
+//         outFile << entry.upper << "\n";
+//         outFile << entry.name << "\n";
+//         outFile << entry.lower << "\n\n";
+//     }
 
-    outFile << "----start---- = 0\n";
+//     outFile << "----start---- = 0\n";
 
-    outFile.close();
-}
+//     outFile.close();
+// }
 
 
 void cpuCycleLoop() {
@@ -619,7 +756,7 @@ void cpuCycleLoop() {
         global_simulated_cycles++;
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
         if(quantumCycles > 0 && global_simulated_cycles % quantumCycles == 0){
-            dumpMemoryStatus(global_simulated_cycles);
+            //dumpMemoryStatus(global_simulated_cycles);
         }
         if (global_simulated_cycles % 100 == 0) {
             std::this_thread::yield();
@@ -1356,6 +1493,128 @@ void screen(std::string &screenCommand) {
                 else{
                     std::cout << "Invalid command. You can only input 'process-smi' or 'exit'. " << std::endl << std::endl;
                 }
+            }
+        }
+    }
+    else if (option == "-c" && !argument.empty()) {
+        std::string processName = argument;
+        std::string memStr;
+        iss >> memStr;
+
+        if (memStr.empty()) {
+            std::cout << "invalid command" << std::endl;
+            return;
+        }
+
+        uint16_t memSize;
+        try {
+            memSize = static_cast<uint16_t>(std::stoi(memStr));
+        } catch (...) {
+            std::cout << "invalid command" << std::endl;
+            return;
+        }
+
+        if (!isValidMemorySize(memSize)) {
+            std::cout << "invalid command" << std::endl;
+            return;
+        }
+
+        // Get the remaining string (should be quoted)
+        std::string remainingInput;
+        std::getline(iss, remainingInput);
+        std::stringstream quotedStream(remainingInput);
+        std::string instructionsString;
+
+        std::getline(quotedStream, instructionsString, '"'); // Skip first quote
+        std::getline(quotedStream, instructionsString, '"'); // Read the actual content
+
+        if (instructionsString.empty()) {
+            std::cout << "invalid command" << std::endl;
+            return;
+        }
+
+        std::vector<Instruction> parsed = parseUserInstructions(instructionsString);
+        if (parsed.size() < 1 || parsed.size() > 50) {
+            std::cout << "invalid command" << std::endl;
+            return;
+        }
+
+        createScreen(processName, memSize);
+        Process* newProcess = allProcesses.back().get();
+        newProcess->setInstructions(parsed);
+
+        if (scheduler && scheduler->isRunning()) {
+            scheduler->addProcess(newProcess);
+        } else {
+            manualProcessesScheduler();
+        }
+
+        clearScreen();
+        std::cout << "Screen created: " << newProcess->getName() << std::endl;
+        std::cout << "Instructions: " << newProcess->getCurrentInstruction() << " out of " << newProcess->getTotalInstructions() << std::endl;
+        std::cout << "Time Created: " << newProcess->getTimeCreated() << std::endl;
+
+        std::string screenInput;
+        while (true) {
+            std::cout << "\n" << newProcess->getName() << ":\\> ";
+            std::getline(std::cin, screenInput);
+
+            if (screenInput == "process-smi") {
+                Process* process = nullptr;
+                auto it = std::find_if(allProcesses.begin(), allProcesses.end(),
+                    [&](const std::unique_ptr<Process>& p) { return p->getName() == newProcess->getName(); });
+
+                if (it != allProcesses.end()) {
+                    process = it->get();
+
+                    setColor(7);
+                    std::cout << "\nProcess name: " << process->getName();
+
+                    if (process->hasFinished()) {
+                        std::cout << " Finished!" << std::endl;
+                    } else {
+                        std::cout << std::endl;
+                    }
+
+                    setColor(7);
+                    std::cout << "ID: ";
+                    setColor(14);
+                    std::cout << process->getId() << std::endl;
+
+                    setColor(7);
+                    std::cout << "Time Created: ";
+                    setColor(14);
+                    std::cout << process->getTimeCreated() << std::endl;
+
+                    setColor(7);
+                    std::cout << "Assigned Core: ";
+                    setColor(14);
+                    std::cout << process->getAssignedCore() << std::endl;
+
+                    setColor(7);
+                    std::cout << "Logs:" << std::endl;
+                    for (const auto& logEntry : process->getLogs()) {
+                        std::cout << logEntry << std::endl;
+                    }
+
+                    setColor(7);
+                    std::cout << "\nCurrent instruction line: ";
+                    setColor(14);
+                    std::cout << process->getCurrentInstruction() << std::endl;
+
+                    setColor(7);
+                    std::cout << "Lines of code: ";
+                    setColor(14);
+                    std::cout << process->getTotalInstructions() << "\n";
+
+                    setColor(7);
+                }
+            } else if (screenInput == "exit") {
+                clearScreen();
+                intro();
+                break;
+            } else {
+                std::cout << "Invalid command. You can only use 'process-smi' or 'exit'." << std::endl;
             }
         }
     }
