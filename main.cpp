@@ -133,7 +133,7 @@ bool readConfig(){
         } 
         else if (key == "quantum-cycles") {
             iss >> quantumCycles;
-            if (quantumCycles < 1 || quantumCycles > 4294967296){
+            if (quantumCycles < 0 || quantumCycles > 4294967296){
                 outOfRangeQuantum = true;
                 std::cout << "Error: quantum-cycles must be between 1 and 4294967296 (inclusive). Please reconfigure config.txt." << std::endl;
             }
@@ -618,7 +618,7 @@ void cpuCycleLoop() {
     while (schedulerRunning) {
         global_simulated_cycles++;
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        if(global_simulated_cycles % quantumCycles == 0){
+        if(quantumCycles > 0 && global_simulated_cycles % quantumCycles == 0){
             dumpMemoryStatus(global_simulated_cycles);
         }
         if (global_simulated_cycles % 100 == 0) {
@@ -751,67 +751,68 @@ public:
     }
 
     void coreWorker(int coreId) {
-        while (running) {
-            Process* processToExecute = nullptr;
+    while (running) {
+        Process* processToExecute = nullptr;
 
-            // Get a process from the queue
-            {
-                std::unique_lock<std::mutex> lock(queueMutex);
-                queueCV.wait(lock, [this]() { return !processQueue.empty() || !running; });
-            
-                if (!running) return;
+        // get the process from the queue
+        {
+            std::unique_lock<std::mutex> lock(queueMutex);
+            queueCV.wait(lock, [this]() { return !processQueue.empty() || !running; });
 
-                processToExecute = processQueue.front();
-                processQueue.pop();
+            if (!running) return;
 
-                if(processToExecute -> getMemoryStartIndex() == -1){
-
-                    uint16_t memoryToAllocate = processToExecute->getRequiredMemorySize();
-
-                    // if memory not specified by user
-                    if (memoryToAllocate == 0){
-                        memoryToAllocate = getMemorySize();
-                    }
-                    // memPerProc = getMemorySize();
-                    int framesNeeded = memPerProc / memPerFrame;
-                    int memIndex = allocateMemory(framesNeeded);
-                    
-                    if(memIndex == -1){
-                        std::lock_guard<std::mutex> lock(queueMutex);
-                        processQueue.push(processToExecute);
-                        queueCV.notify_all();
-                        continue;
-                    }
-                    processToExecute->setMemoryAllocation(memIndex, framesNeeded);
-                }
-
-                {
-                    std::lock_guard<std::mutex> pLock(processMutex);
-                    runningProcesses.push_back(processToExecute);
-                }
-            }
-
-        // Assign process to this core and execute until it's done
-            processToExecute->setAssignedCore(coreId);
-            while (processToExecute->canExecute() && running) {
-                processToExecute->executeInstruction(coreId);
-            }
-            if(processToExecute -> getMemoryStartIndex() != -1){
-                freeMemory(processToExecute->getMemoryStartIndex(), processToExecute->getFramesAllocated());
-            }
-
-            // Move to finished
-            {
-                std::lock_guard<std::mutex> pLock(processMutex);
-                runningProcesses.erase(
-                    std::remove_if(runningProcesses.begin(), runningProcesses.end(),
-                        [processToExecute](const Process* p) { return p->getId() == processToExecute->getId(); }),
-                    runningProcesses.end());
-
-                finishedProcesses.push_back(processToExecute);
-            }
+            processToExecute = processQueue.front();
+            processQueue.pop();
         }
-    }   
+
+        if (processToExecute->getMemoryStartIndex() == -1) {
+            uint16_t memoryToAllocate = processToExecute->getRequiredMemorySize();
+            if (memoryToAllocate == 0) {
+                memoryToAllocate = getMemorySize();
+            }
+
+            // fix: Use the correct memory size variable for the calculation
+            int framesNeeded = memoryToAllocate / memPerFrame;
+            int memIndex = allocateMemory(framesNeeded);
+
+            if (memIndex == -1) {
+                {
+                    std::lock_guard<std::mutex> lock(queueMutex);
+                    processQueue.push(processToExecute);
+                }
+                queueCV.notify_all();
+                std::this_thread::sleep_for(std::chrono::milliseconds(100)); // pause to prevent high CPU usage
+                continue;
+            }
+            processToExecute->setMemoryAllocation(memIndex, framesNeeded);
+        }
+        
+        // add to running list
+        {
+            std::lock_guard<std::mutex> pLock(processMutex);
+            runningProcesses.push_back(processToExecute);
+        }
+
+        processToExecute->setAssignedCore(coreId);
+        while (processToExecute->canExecute() && running) {
+            processToExecute->executeInstruction(coreId);
+        }
+        if (processToExecute->getMemoryStartIndex() != -1) {
+            freeMemory(processToExecute->getMemoryStartIndex(), processToExecute->getFramesAllocated());
+        }
+
+        // move to finished
+        {
+            std::lock_guard<std::mutex> pLock(processMutex);
+            runningProcesses.erase(
+                std::remove_if(runningProcesses.begin(), runningProcesses.end(),
+                    [processToExecute](const Process* p) { return p->getId() == processToExecute->getId(); }),
+                runningProcesses.end());
+
+            finishedProcesses.push_back(processToExecute);
+        }
+    }
+} 
     
     bool isRunning() const override { return running; }
 };
@@ -905,9 +906,10 @@ public:
             int executedCycles = 0;
             while (executedCycles < quantum && processToExecute->canExecute() && running) {
                 //NEW
+                uint16_t memoryToAllocate = processToExecute->getRequiredMemorySize();
                 if(processToExecute -> getMemoryStartIndex() == -1){
                     memPerProc = getMemorySize();
-                    int framesNeeded = memPerProc / memPerFrame;
+                    int framesNeeded = memoryToAllocate / memPerFrame;
                     int memIndex = allocateMemory(framesNeeded);
                     
                     if(memIndex == -1){
