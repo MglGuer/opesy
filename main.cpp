@@ -149,9 +149,7 @@ std::vector<Instruction> parseUserInstructions(const std::string& input) {
                         cleaned += ch;
                     }
                 }
-                if (escape) {
-                    cleaned += '\\';
-                }
+                if (escape) cleaned += '\\';
 
                 // Trim leading/trailing whitespace
                 cleaned.erase(0, cleaned.find_first_not_of(" \t\n\r"));
@@ -559,21 +557,21 @@ public:
     
     // Move assignment operator
     Process& operator=(Process&& other) noexcept {
-        if (this != &other) {
-            name = std::move(other.name);
-            id = other.id;
-            totalInstructions = other.totalInstructions;
-            remainingInstructions = other.remainingInstructions;
-            currentInstruction = other.currentInstruction;
-            timeCreated = std::move(other.timeCreated);
-            assignedCore = other.assignedCore;
-            logFile = std::move(other.logFile);
-            instructions = std::move(other.instructions);
-            variables = std::move(other.variables);
-            cyclesSinceLastExec.store(other.cyclesSinceLastExec.load());
-            sleepUntilCycle.store(other.sleepUntilCycle.load());
-        }
-        return *this;
+    if (this != &other) {
+        name = std::move(other.name);
+        id = other.id;
+        totalInstructions = other.totalInstructions;
+        remainingInstructions = other.remainingInstructions;
+        currentInstruction = other.currentInstruction;
+        timeCreated = std::move(other.timeCreated);
+        assignedCore = other.assignedCore;
+        logFile = std::move(other.logFile);
+        instructions = std::move(other.instructions);
+        variables = std::move(other.variables);
+        cyclesSinceLastExec.store(other.cyclesSinceLastExec.load());
+        sleepUntilCycle.store(other.sleepUntilCycle.load());
+    }
+    return *this;
     }
     
     // Destructor
@@ -672,7 +670,7 @@ public:
     // Execute one instruction of the process
     bool executeInstruction(int coreId) {
         std::lock_guard<std::mutex> lock(processExecutionMutex);
-        
+
         if (global_simulated_cycles < sleepUntilCycle) {
             return true;
         }
@@ -781,6 +779,71 @@ public:
                     }
                     oss << "Executed a FOR loop.";
                     break;
+                
+                    // READ FUNCTION
+                case InstructionType::READ: {
+                    const std::string& varName = instr.args[0];
+                    const std::string& addrStr = instr.args[1];
+
+                    uint16_t addr = 0;
+                    try {
+                        addr = std::stoi(addrStr, nullptr, 16);     // Parse hex
+                    } catch (...) {
+                    oss << "READ ERROR: Invalid address format: " << addrStr;
+                    break;
+                    }
+
+                    // checks whether the input memory is in range or not
+                    // 0xFFFF is harcoded due to using dynamic memory map. this is a max bounded check
+                    if (addr > 0xFFFF - 1) {
+                        oss << "READ ERROR: Address out of bounds.";
+                        break;
+                    }
+
+                    uint8_t low  = memoryBlock.count(addr)     ? memoryBlock[addr]     : 0;
+                    uint8_t high = memoryBlock.count(addr + 1) ? memoryBlock[addr + 1] : 0;
+
+                    uint16_t value = (high << 8) | low;
+                    variables[varName] = value;
+                    //uint16_t value = (memory[addr + 1] << 8) | memory[addr];
+                    //variables[varName] = value;
+
+                    oss << "READ " << varName << " = mem[" << addrStr << "] -> " << value;
+                    break;
+                    }
+                
+                    // WRITE FUNCTION
+                case InstructionType::WRITE: {
+                    const std::string& addrStr = instr.args[0];
+                    const std::string& valStr = instr.args[1];
+
+                    uint16_t addr = 0;
+                    uint16_t value = 0;
+                    try {
+                        addr = std::stoi(addrStr, nullptr, 16);         //Parse hex address
+                        value = std::stoi(valStr);                      // parse value
+                    } catch (...) {
+                        oss << "WRITE ERROR: Invalid address or value.";
+                        break;
+                    }
+                    
+                    // checks whether the input memory is in range or not 
+                    // 0xFFFF is harcoded due to using dynamic memory map. this is a max bounded check
+                    if (addr > 0xFFFF - 1) {
+                        oss << "WRITE ERROR: Address out of bounds.";
+                        break;
+                    }
+
+                    value = std::min<uint16_t>(value, std::numeric_limits<uint16_t>::max()); // clamp value to uint16_t
+                    memoryBlock[addr]     = static_cast<uint8_t>(value & 0xFF);        // Low byte
+                    memoryBlock[addr + 1] = static_cast<uint8_t>((value >> 8) & 0xFF); // High byte
+                    //memory[addr] = value & 0xFF;
+                    //memory[addr + 1] = (value >> 8) & 0xFF;
+
+                    oss << "WRITE mem[" << addrStr << "] = " << value;
+                    break;
+                }
+
             }
             
             // Log the print command
@@ -1088,7 +1151,6 @@ public:
                 memoryToAllocate = getMemorySize();
             }
 
-            // fix: Use the correct memory size variable for the calculation
             int framesNeeded = memoryToAllocate / memPerFrame;
             int memIndex = allocateMemory(framesNeeded);
 
@@ -1514,7 +1576,7 @@ void screen(std::string &screenCommand) {
 
         createScreen(argument, memSize);
         Process* newProcess = allProcesses.back().get();
-        newProcess -> initPageTable(totalFrames);
+
         if (scheduler && scheduler->isRunning()) {
             scheduler->addProcess(newProcess);
         } else {
@@ -1637,8 +1699,8 @@ void screen(std::string &screenCommand) {
 
         if (found) {
             std::string screenInput;
-            while(true) {
-                std::cout << "\n" << curScreen.screenName << ":\\> ";
+            while(screenInput != "exit") {
+                std::cout << "\nroot:\\> ";
                 std::getline(std::cin, screenInput);
                 if(screenInput == "process-smi") {
                     auto it = std::find_if(allProcesses.begin(), allProcesses.end(),
@@ -2020,11 +2082,7 @@ void menu() {
         setColor(7);
         std::cout << "\nroot:\\> ";
         std::string command;
-        std::getline(std::cin, command);
-
-        if (command.empty()) {
-            continue;
-        }
+        std::getline(std::cin >> std::ws, command);
 
         if(command == "exit") {
             if (scheduler != nullptr) {
