@@ -89,30 +89,84 @@ std::vector<Instruction> parseUserInstructions(const std::string& input) {
     std::istringstream stream(input);
     std::string token;
 
+    std::cout << "[DEBUG] Full input string: [" << input << "]\n";
+
+    // Split by semicolon
     while (std::getline(stream, token, ';')) {
+        std::cout << "[DEBUG] Processing token: [" << token << "]\n";
+        
+        // Trim whitespace from token
+        token.erase(0, token.find_first_not_of(" \t\n\r"));
+        token.erase(token.find_last_not_of(" \t\n\r") + 1);
+        
+        if (token.empty()) {
+            std::cout << "[DEBUG] Empty token, skipping\n";
+            continue;
+        }
+        
         std::istringstream instrStream(token);
         std::string op;
         instrStream >> op;
+        
+        // Clean up op: remove leading/trailing spaces, '(' and '\' characters
+        op.erase(std::remove_if(op.begin(), op.end(), [](unsigned char c) {
+            return std::isspace(c) || c == '(' || c == '\\';
+        }), op.end());
+        std::cout << "[DEBUG] Cleaned Operation: [" << op << "]" << std::endl;
 
+
+        std::cout << "[DEBUG] Operation: [" << op << "]\n";
+        
         Instruction instr;
         instr.args.clear();
-
+        
         if (op == "PRINT") {
             instr.type = InstructionType::PRINT;
-            std::string remainder;
-            std::getline(instrStream, remainder);
-            auto start = remainder.find('(');
-            auto end = remainder.rfind(')');
+            
+            // Find the parentheses in the token (not just instrStream)
+            size_t start = token.find('(');
+            size_t end = token.rfind(')');
+            
+            std::cout << "[DEBUG] PRINT token: [" << token << "]\n";
+            std::cout << "[DEBUG] Parentheses at: " << start << " and " << end << "\n";
+
             if (start != std::string::npos && end != std::string::npos && end > start) {
-                std::string inner = remainder.substr(start + 1, end - start - 1);
-                instr.args.push_back(inner);
-            } 
-            else {
+                std::string inside = token.substr(start + 1, end - start - 1);
+                std::cout << "[DEBUG] Inside parentheses: [" << inside << "]\n";
+
+                // Unescape \" → "
+                std::string cleaned;
+                bool escape = false;
+                for (char ch : inside) {
+                    if (escape) {
+                        if (ch == '\"') cleaned += '\"';
+                        else {
+                            cleaned += '\\';
+                            cleaned += ch;
+                        }
+                        escape = false;
+                    } else if (ch == '\\') {
+                        escape = true;
+                    } else {
+                        cleaned += ch;
+                    }
+                }
+                if (escape) {
+                    cleaned += '\\';
+                }
+
+                // Trim leading/trailing whitespace
+                cleaned.erase(0, cleaned.find_first_not_of(" \t\n\r"));
+                cleaned.erase(cleaned.find_last_not_of(" \t\n\r") + 1);
+
+                instr.args.push_back(cleaned);
+                std::cout << "[DEBUG] Parsed PRINT argument: [" << cleaned << "]\n";
+            } else {
                 std::cerr << "Warning: Malformed PRINT instruction: " << token << std::endl;
                 continue;
             }
-
-        } else if (op == "DECLARE") {
+        }
+        else if (op == "DECLARE") {
             std::string var, value;
             instrStream >> var >> value;
             if (var.empty() || value.empty()) {
@@ -121,7 +175,9 @@ std::vector<Instruction> parseUserInstructions(const std::string& input) {
             }
             instr.type = InstructionType::DECLARE;
             instr.args = {var, value};
-        } else if (op == "ADD") {
+            std::cout << "[DEBUG] Parsed DECLARE: " << var << " = " << value << "\n";
+        } 
+        else if (op == "ADD") {
             std::string a, b, c;
             instrStream >> a >> b >> c;
             if (a.empty() || b.empty() || c.empty()) {
@@ -130,7 +186,9 @@ std::vector<Instruction> parseUserInstructions(const std::string& input) {
             }
             instr.type = InstructionType::ADD;
             instr.args = {a, b, c};
-        } else if (op == "SUBTRACT") {
+            std::cout << "[DEBUG] Parsed ADD: " << a << " = " << b << " + " << c << "\n";
+        } 
+        else if (op == "SUBTRACT") {
             std::string a, b, c;
             instrStream >> a >> b >> c;
             if (a.empty() || b.empty() || c.empty()) {
@@ -139,7 +197,8 @@ std::vector<Instruction> parseUserInstructions(const std::string& input) {
             }
             instr.type = InstructionType::SUBTRACT;
             instr.args = {a, b, c};
-        } else if (op == "WRITE") {
+        } 
+        else if (op == "WRITE") {
             std::string addr, var;
             instrStream >> addr >> var;
             if (addr.empty() || var.empty()) {
@@ -148,7 +207,8 @@ std::vector<Instruction> parseUserInstructions(const std::string& input) {
             }
             instr.type = InstructionType::WRITE;
             instr.args = {addr, var};
-        } else if (op == "READ") {
+        } 
+        else if (op == "READ") {
             std::string var, addr;
             instrStream >> var >> addr;
             if (var.empty() || addr.empty()) {
@@ -157,7 +217,8 @@ std::vector<Instruction> parseUserInstructions(const std::string& input) {
             }
             instr.type = InstructionType::READ;
             instr.args = {var, addr};
-        } else if (op == "SLEEP") {
+        } 
+        else if (op == "SLEEP") {
             std::string ticks;
             instrStream >> ticks;
             if (ticks.empty()) {
@@ -166,7 +227,8 @@ std::vector<Instruction> parseUserInstructions(const std::string& input) {
             }
             instr.type = InstructionType::SLEEP;
             instr.args = {ticks};
-        } else if (op == "MULTIPLY") {
+        } 
+        else if (op == "MULTIPLY") {
             std::string a, b, c;
             instrStream >> a >> b >> c;
             if (a.empty() || b.empty() || c.empty()) {
@@ -175,7 +237,8 @@ std::vector<Instruction> parseUserInstructions(const std::string& input) {
             }
             instr.type = InstructionType::MULTIPLY;
             instr.args = {a, b, c};
-        } else if (op == "DIVIDE") {
+        } 
+        else if (op == "DIVIDE") {
             std::string a, b, c;
             instrStream >> a >> b >> c;
             if (a.empty() || b.empty() || c.empty()) {
@@ -184,15 +247,17 @@ std::vector<Instruction> parseUserInstructions(const std::string& input) {
             }
             instr.type = InstructionType::DIVIDE;
             instr.args = {a, b, c};
-        } else {
+        } 
+        else {
             std::cerr << "Warning: Unknown instruction type: " << op << std::endl;
             continue;
         }
-        std::cout << "Parsed instruction: " << op << std::endl;
-
+        
+        std::cout << "[DEBUG] Adding instruction: " << op << std::endl;
         result.push_back(instr);
     }
 
+    std::cout << "[DEBUG] Total instructions parsed: " << result.size() << std::endl;
     return result;
 }
 
@@ -687,77 +752,45 @@ public:
 };
 
 // NEW: Function to dump memory status to a file
-// void dumpMemoryStatus(uint64_t curCycle) {
-//     std::string filename = "memory_stamp_" + std::to_string(curCycle) + ".txt";
-//     std::ofstream outFile(filename);
-//     if (!outFile.is_open()) return;
+void printVMStat() {
+    std::lock_guard<std::mutex> lock(processMutex);
 
-//     // Timestamp
-//     auto t = std::time(nullptr);
-//     auto tm = *std::localtime(&t);
-//     char timestamp[100];
-//     std::strftime(timestamp, sizeof(timestamp), "%m/%d/%Y %I:%M:%S%p", &tm);
+    int totalMem = maxOverallMem;  // in bytes
+    int usedMem = 0;
 
-//     // Count processes in memory
-//     int procInMem = 0;
-//     {
-//         std::lock_guard<std::mutex> lock(processMutex);
-//         for (const auto& p : runningProcesses)
-//             if (p->getMemoryStartIndex() != -1) procInMem++;
-//     }
+    for (const auto& p : runningProcesses) {
+        if (p->getMemoryStartIndex() != -1) {
+            usedMem += p->getFramesAllocated() * memPerFrame;
+        }
+    }
 
-//     int fragKB = countExternalFragmentation();
+    int freeMem = totalMem - usedMem;
+    int fragKB = countExternalFragmentation();
 
-//     outFile << "Timestamp: (" << timestamp << ")\n";
-//     outFile << "Number of processes in memory: " << procInMem << "\n";
-//     outFile << "Total external fragmentation in KB: " << fragKB << "\n\n";
+    // uint64_t idleTicks = 0, activeTicks = 0;
+    // for (const auto& core : cpuCores) {
+    //     idleTicks += core->getIdleTicks();
+    //     activeTicks += core->getActiveTicks();
+    // }
 
-//     outFile << "----end---- = " << maxOverallMem << "\n";
+    std::cout << "\n=== VMSTAT ===\n";
+    std::cout << "Total memory      : " << totalMem << " bytes\n";
+    std::cout << "Used memory       : " << usedMem << " bytes\n";
+    std::cout << "Free memory       : " << freeMem << " bytes\n";
+    std::cout << "Total fragmentation: " << fragKB << " KB\n";
+    // std::cout << "Idle CPU ticks    : " << idleTicks << "\n";
+    // std::cout << "Active CPU ticks  : " << activeTicks << "\n";
+    //std::cout << "Num paged in      : " << getTotalPagedIn() << "\n";
+    //std::cout << "Num paged out     : " << getTotalPagedOut() << "\n";
+    std::cout << "=================\n";
+}
 
-//     // Collect process layout
-//     struct MemoryEntry {
-//         int lower;
-//         int upper;
-//         std::string name;
-//     };
-
-//     std::vector<MemoryEntry> memLayout;
-
-//     {
-//         std::lock_guard<std::mutex> lock(processMutex);
-//         for (const auto& p : runningProcesses) {
-//             if (p->getMemoryStartIndex() != -1) {
-//                 int start = p->getMemoryStartIndex() * memPerFrame;
-//                 int end = start + (p->getFramesAllocated() * memPerFrame);
-//                 memLayout.push_back({start, end, p->getName()});
-//             }
-//         }
-//     }
-
-//     // Sort from top to bottom (descending upper address)
-//     std::sort(memLayout.begin(), memLayout.end(), [](const MemoryEntry& a, const MemoryEntry& b) {
-//         return a.upper > b.upper;
-//     });
-
-//     for (const auto& entry : memLayout) {
-//         outFile << entry.upper << "\n";
-//         outFile << entry.name << "\n";
-//         outFile << entry.lower << "\n\n";
-//     }
-
-//     outFile << "----start---- = 0\n";
-
-//     outFile.close();
-// }
 
 
 void cpuCycleLoop() {
     while (schedulerRunning) {
         global_simulated_cycles++;
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        if(quantumCycles > 0 && global_simulated_cycles % quantumCycles == 0){
-            //dumpMemoryStatus(global_simulated_cycles);
-        }
         if (global_simulated_cycles % 100 == 0) {
             std::this_thread::yield();
         }
@@ -1549,7 +1582,7 @@ void screen(std::string &screenCommand) {
             manualProcessesScheduler();
         }
 
-        clearScreen();
+        //clearScreen();
         std::cout << "Screen created: " << newProcess->getName() << std::endl;
         std::cout << "Instructions: " << newProcess->getCurrentInstruction() << " out of " << newProcess->getTotalInstructions() << std::endl;
         std::cout << "Time Created: " << newProcess->getTimeCreated() << std::endl;
@@ -1873,6 +1906,9 @@ void menu() {
 
         else if(command == "process-smi"){
             processSmi();
+        }
+        else if(command == "vmstat"){
+            printVMStat();
         }
         else {
             std::cout << "Unknown command. Please try again.\n\n";
