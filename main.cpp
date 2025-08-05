@@ -543,7 +543,11 @@ public:
         oss << "Process " << name << " shut down due to memory access violation error that occurred at "
             << std::string(timeBuf) << ". 0x" << std::hex << std::uppercase << address << " invalid.";
 
-        logs.push_back(oss.str());
+
+        std::string errorMsg = oss.str();
+        logs.push_back(errorMsg);
+
+        std::cout << "[ERROR]" << errorMsg << std::endl;
         remainingInstructions = 0;
     }
 
