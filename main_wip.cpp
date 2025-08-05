@@ -27,6 +27,26 @@ class RoundRobinScheduler;
 bool accessMemory(Process *proc, int vpn, int curCycle);
 void handlePageFault(Process *proc, int vpn, unsigned long long curCycle);
 
+
+
+struct FrameEntry
+{
+    bool occupied = false;
+    int processId = -1;
+    int virtualPageNum = -1;
+    uint64_t lastUsedTimestamp = 0;
+    std::vector<uint8_t> data;
+};
+
+std::vector<FrameEntry> frameTable; // System-wide physical frame table
+std::deque<int> freeFrameList;      // A list of indices for free frames
+
+// Atomics for vmstat
+std::atomic<uint64_t> numPagedIn{0};
+std::atomic<uint64_t> numPagedOut{0};
+std::atomic<uint64_t> totalIdleTicks{0};
+std::atomic<uint64_t> totalActiveTicks{0};
+
 // Global variables
 // std::vector<std::unique_ptr<Process>> allProcesses;
 std::list<std::unique_ptr<Process>> allProcesses;
@@ -46,7 +66,6 @@ std::atomic<int> autoProcessCounter{0}; // for tracking auto-generated screen na
 
 // NEW
 // std::vector<bool> memoryBlock; //true = used, false = free
-std::map<int, int> memoryBlock; // vector to map
 
 // FOR CONFIG.txt
 int numCPU;                // number of cores (between 1-128 inclusive)
@@ -511,100 +530,40 @@ void writePageToBackingStore(int pid, int vpn, const std::vector<int> &data)
 }
 // END OF NEW
 // NEW
-int allocateMemory(int framesNeeded)
-{
-    std::lock_guard<std::mutex> lock(memoryMutex);
-
-    if (memoryBlock.empty())
-    {
-        if (framesNeeded <= totalFrames)
-        {
-            memoryBlock[0] = framesNeeded;
-            return 0;
-        }
-        else
-        {
-            return -1;
-        }
-    }
-
-    int lastEnd = 0;
-    for (const auto &[start, size] : memoryBlock)
-    {
-        int gap = start - lastEnd;
-        if (gap >= framesNeeded)
-        {
-            memoryBlock[lastEnd] = framesNeeded;
-            return lastEnd;
-        }
-        lastEnd = start + size;
-    }
-
-    // Check space at the end
-    if (totalFrames - lastEnd >= framesNeeded)
-    {
-        memoryBlock[lastEnd] = framesNeeded;
-        return lastEnd;
-    }
-
-    return -1; // Not enough space
-}
-
-// NEW
-void freeMemory(int startIndex, int frames)
-{
-    std::lock_guard<std::mutex> lock(memoryMutex);
-    auto it = memoryBlock.find(startIndex);
-    if (it != memoryBlock.end() && it->second == frames)
-    {
-        memoryBlock.erase(it);
-    }
-}
-
-// NEW
-int countExternalFragmentation()
-{
-    std::lock_guard<std::mutex> lock(memoryMutex);
-    int freeFrames = 0;
-    int lastEnd = 0;
-
-    for (const auto &[start, size] : memoryBlock)
-    {
-        freeFrames += (start - lastEnd); // space between blocks
-        lastEnd = start + size;
-    }
-
-    // Space at the end
-    freeFrames += (totalFrames - lastEnd);
-
-    return freeFrames * memPerFrame; // in KB
-}
 
 // Process class
 class Process
 {
+    friend bool accessMemory(Process *proc, int vpn, int curCycle);
+    friend void handlePageFault(Process *proc, int vpn, unsigned long long curCycle);
+
 private:
-    std::string name;                          // name of the process based from user input
-    int id;                                    // process id
-    int totalInstructions;                     // total number of instructions that the process needs to run
-    int remainingInstructions;                 // number of instructions in the process queue
-    int currentInstruction;                    // line of instruction the process is currently in
-    std::string timeCreated;                   // time the process was created, includes date and time
-    int assignedCore;                          // the process's assigned core to execute in
-    std::unique_ptr<std::ofstream> logFile;    // stores the logfile of past processes executed
-    std::mutex processExecutionMutex;          // Mutex to protect process execution
-    std::vector<std::string> logs;             // Store execution logs
-    std::atomic<int> cyclesSinceLastExec{0};   // For delays-per-exec implementation
-    std::vector<Instruction> instructions;     // list of instructions the process will implement
-    std::map<std::string, uint16_t> variables; // variables that will be declared during the process
-    std::atomic<uint64_t> sleepUntilCycle{0};  // for applying sleep to a process
-    std::vector<int> forLoopCounters;          // Stack for nested for loops
+    std::string name;
+    int id;
+    int totalInstructions;
+    int remainingInstructions;
+    int currentInstruction;
+    std::string timeCreated;
+    int assignedCore;
+    std::unique_ptr<std::ofstream> logFile;
+    std::mutex processExecutionMutex;
+    std::vector<std::string> logs;
+    std::atomic<int> cyclesSinceLastExec{0};
+    std::vector<Instruction> instructions;
+    std::map<std::string, uint16_t> variables;
+    std::atomic<uint64_t> sleepUntilCycle{0};
+    std::vector<int> forLoopCounters;
     std::vector<int> forLoopMaxRepeats;
 
-    int memoryStartIndex = -1;
-    int framesAllocated = 0;
-
     uint16_t requiredMemorySize;
+
+    struct PageTableEntry
+    {
+        bool present = false;
+        bool dirty = false;
+        int frameIndex = -1;
+    };
+    std::vector<PageTableEntry> pageTable;
 
     bool terminatedDueToMemoryViolation = false;
     std::string violationTimestamp;
@@ -627,6 +586,12 @@ public:
         std::tm *timeinfo = std::localtime(&timestamp);
         std::strftime(buffer, sizeof(buffer), "%m/%d/%Y %I:%M:%S%p", timeinfo);
         timeCreated = buffer;
+
+        if (memPerFrame > 0)
+        {
+            int numPages = (requiredMemorySize + memPerFrame - 1) / memPerFrame;
+            pageTable.resize(numPages);
+        }
 
         generateRandomInstructions(numInstructions);
     }
@@ -694,21 +659,6 @@ public:
     // }
 
     // NEW
-    int getMemoryStartIndex() const
-    {
-        return memoryStartIndex;
-    }
-    // NEW
-    int getFramesAllocated() const
-    {
-        return framesAllocated;
-    }
-    // NEW
-    void setMemoryAllocation(int startIndex, int frames)
-    {
-        memoryStartIndex = startIndex;
-        framesAllocated = frames;
-    }
     // for instructions not sureee
     void generateRandomInstructions(int numInstructions, int depth = 0)
     {
@@ -799,16 +749,10 @@ public:
     // NEW: Memory access validation
     bool isValidMemoryAddress(uint32_t address) const
     {
-        if (memoryStartIndex == -1)
-        {
-            return false; // No memory allocated
-        }
-
-        uint32_t startAddr = memoryStartIndex * memPerFrame;
-        uint32_t endAddr = startAddr + (framesAllocated * memPerFrame);
-
-        // Check if address is within allocated memory bounds
-        return (address >= startAddr && address < endAddr);
+        if (memPerFrame == 0)
+            return false; // Avoid division by zero
+        uint32_t maxVirtualAddress = pageTable.size() * memPerFrame;
+        return (address < maxVirtualAddress);
     }
 
     // Execute one instruction of the process
@@ -864,6 +808,9 @@ public:
         // symbol table (variables)
         case InstructionType::DECLARE:
         {
+            // Ensure the page for the symbol table is loaded in memory
+            accessMemory(this, 0, global_simulated_cycles);
+
             if (variables.size() >= 32)
             {
                 oss << "Symbol table full." << instr.args[0];
@@ -872,9 +819,9 @@ public:
             {
                 variables[instr.args[0]] = static_cast<uint16_t>(std::stoul(instr.args[1]));
                 oss << "Declared " << instr.args[0] << " = " << instr.args[1];
-                // int virtualPage = rand() % pageTable.size();
-                // accessMemory(this, virtualPage, global_simulated_cycles);
-                // getPage(virtualPage).dirty = true;
+
+                // Mark the page as dirty since we've conceptually written to the symbol table
+                pageTable[0].dirty = true;
             }
             break;
         }
@@ -953,22 +900,13 @@ public:
 
             std::string hexAddrStr = instr.args[0];
             std::string valueStr = instr.args[1];
-
             uint32_t virtualAddress;
             uint16_t value;
 
             try
             {
                 virtualAddress = std::stoul(hexAddrStr, nullptr, 16);
-                // It's safer to check for a variable first before trying to convert to a number
-                if (variables.count(valueStr))
-                {
-                    value = variables[valueStr];
-                }
-                else
-                {
-                    value = static_cast<uint16_t>(std::stoul(valueStr));
-                }
+                value = variables.count(valueStr) ? variables[valueStr] : static_cast<uint16_t>(std::stoul(valueStr));
             }
             catch (const std::exception &e)
             {
@@ -976,21 +914,34 @@ public:
                 break;
             }
 
-            if (!isValidMemoryAddress(virtualAddress))
+            if (!isValidMemoryAddress(virtualAddress) || virtualAddress + 1 >= pageTable.size() * memPerFrame)
             {
                 recordMemoryViolation(virtualAddress);
                 oss << "MEMORY ACCESS VIOLATION: Invalid address " << hexAddrStr;
-                return false; // Terminate process immediately
+                return false;
             }
 
-            // If the check passes, proceed with the write
-            memoryBlock[virtualAddress] = static_cast<uint8_t>(value & 0xFF);
-            memoryBlock[virtualAddress + 1] = static_cast<uint8_t>((value >> 8) & 0xFF);
+            int vpn = virtualAddress / memPerFrame;
+            int offset = virtualAddress % memPerFrame;
+
+            // Ensure the target page is loaded into a frame
+            accessMemory(this, vpn, global_simulated_cycles);
+
+            // Get the physical frame this page is mapped to
+            int frameIdx = pageTable[vpn].frameIndex;
+
+            // Write the 2-byte value to the physical frame's data buffer
+            frameTable[frameIdx].data[offset] = static_cast<uint8_t>(value & 0xFF);            // Low byte
+            frameTable[frameIdx].data[offset + 1] = static_cast<uint8_t>((value >> 8) & 0xFF); // High byte
+
+            // Mark the page as dirty
+            pageTable[vpn].dirty = true;
 
             oss << "WRITE: memory[" << hexAddrStr << "] = " << value;
             break;
         }
             // READ FUNCTION
+
         case InstructionType::READ:
         {
             if (instr.args.size() < 2)
@@ -1001,8 +952,8 @@ public:
 
             std::string varName = instr.args[0];
             std::string hexAddrStr = instr.args[1];
-
             uint32_t virtualAddress;
+
             try
             {
                 virtualAddress = std::stoul(hexAddrStr, nullptr, 16);
@@ -1013,24 +964,33 @@ public:
                 break;
             }
 
-            // *** THIS IS THE CRITICAL CHECK THAT WAS MISSING ***
-            if (!isValidMemoryAddress(virtualAddress))
+            if (!isValidMemoryAddress(virtualAddress) || virtualAddress + 1 >= pageTable.size() * memPerFrame)
             {
                 recordMemoryViolation(virtualAddress);
                 oss << "MEMORY ACCESS VIOLATION: Invalid address " << hexAddrStr;
-                return false; // Terminate process immediately
+                return false;
             }
 
-            // If the check passes, proceed with the read
             if (variables.size() >= 32 && variables.find(varName) == variables.end())
             {
                 oss << "Symbol table full. Cannot declare " << varName;
                 break;
             }
 
-            uint8_t low = memoryBlock.count(virtualAddress) ? memoryBlock[virtualAddress] : 0;
-            uint8_t high = memoryBlock.count(virtualAddress + 1) ? memoryBlock[virtualAddress + 1] : 0;
-            uint16_t value = (high << 8) | low;
+            int vpn = virtualAddress / memPerFrame;
+            int offset = virtualAddress % memPerFrame;
+
+            // Ensure the target page is loaded into a frame
+            accessMemory(this, vpn, global_simulated_cycles);
+
+            // Get the physical frame this page is mapped to
+            int frameIdx = pageTable[vpn].frameIndex;
+
+            // Read the 2-byte value from the physical frame's data buffer
+            uint8_t lowByte = frameTable[frameIdx].data[offset];
+            uint8_t highByte = frameTable[frameIdx].data[offset + 1];
+            uint16_t value = (highByte << 8) | lowByte;
+
             variables[varName] = value;
 
             oss << "READ: " << varName << " = memory[" << hexAddrStr << "] -> " << value;
@@ -1141,7 +1101,7 @@ public:
 //     newPage.dirty = false;
 // }
 
-// bool accessMemory(Process* proc, int vpn, int curCycle) {
+//  bool accessMemory(Process* proc, int vpn, int curCycle) {
 //     auto& entry = proc->getPage(vpn);
 //     if (entry.present) {
 //         frameTable[entry.frameIndex].lastUsed = curCycle;
@@ -1156,38 +1116,145 @@ public:
 // NEW: Function to dump memory status to a file
 void printVMStat()
 {
-    std::lock_guard<std::mutex> lock(processMutex);
+    std::lock_guard<std::mutex> lock(memoryMutex);
 
-    int totalMem = maxOverallMem; // in bytes
-    int usedMem = 0;
-
-    for (const auto &p : runningProcesses)
-    {
-        if (p->getMemoryStartIndex() != -1)
-        {
-            usedMem += p->getFramesAllocated() * memPerFrame;
-        }
-    }
-
+    int totalMem = maxOverallMem;                                     // in bytes
+    int usedMem = (totalFrames - freeFrameList.size()) * memPerFrame; // Correct way to count used memory
     int freeMem = totalMem - usedMem;
-    int fragKB = countExternalFragmentation();
+    uint64_t currentIdleTicks = totalIdleTicks.load();
+    uint64_t currentActiveTicks = totalActiveTicks.load();
+    uint64_t totalTicks = currentIdleTicks + currentActiveTicks;
 
-    // uint64_t idleTicks = 0, activeTicks = 0;
-    // for (const auto& core : cpuCores) {
-    //     idleTicks += core->getIdleTicks();
-    //     activeTicks += core->getActiveTicks();
-    // }
 
     std::cout << "\n=== VMSTAT ===\n";
+    std::cout << "memory\n";
     std::cout << "Total memory      : " << totalMem << " bytes\n";
     std::cout << "Used memory       : " << usedMem << " bytes\n";
     std::cout << "Free memory       : " << freeMem << " bytes\n";
-    std::cout << "Total fragmentation: " << fragKB << " KB\n";
-    // std::cout << "Idle CPU ticks    : " << idleTicks << "\n";
-    // std::cout << "Active CPU ticks  : " << activeTicks << "\n";
-    // std::cout << "Num paged in      : " << getTotalPagedIn() << "\n";
-    // std::cout << "Num paged out     : " << getTotalPagedOut() << "\n";
+    std::cout << "cpu\n";
+    std::cout << "Idle cpu ticks    : " << currentIdleTicks << "\n";
+    std::cout << "Active cpu ticks  : " << currentActiveTicks << "\n";
+    std::cout << "Total cpu ticks   : " << totalTicks << "\n";
+    std::cout << "paging\n";
+    std::cout << "Num paged in      : " << numPagedIn.load() << "\n";
+    std::cout << "Num paged out     : " << numPagedOut.load() << "\n";
     std::cout << "=================\n";
+}
+
+// Helper function to find a process by its ID
+Process *getProcessById(int pid)
+{
+    // This lock is important because we are iterating over a shared resource
+    std::lock_guard<std::mutex> lock(processMutex);
+    for (auto &p_ptr : allProcesses)
+    {
+        if (p_ptr->getId() == pid)
+        {
+            return p_ptr.get();
+        }
+    }
+    return nullptr; // Not found
+}
+
+// Helper function for LRU page replacement algorithm
+int findVictimFrame_LRU()
+{
+    uint64_t oldestTimestamp = ULLONG_MAX;
+    int victimFrameIndex = -1;
+
+    for (int i = 0; i < frameTable.size(); ++i)
+    {
+        if (frameTable[i].occupied && frameTable[i].lastUsedTimestamp < oldestTimestamp)
+        {
+            oldestTimestamp = frameTable[i].lastUsedTimestamp;
+            victimFrameIndex = i;
+        }
+    }
+    return victimFrameIndex;
+}
+
+void handlePageFault(Process *proc, int vpn, unsigned long long curCycle)
+{
+    std::lock_guard<std::mutex> lock(memoryMutex); // Lock before modifying shared memory structures
+
+    int frameToUse = -1;
+
+    if (!freeFrameList.empty())
+    {
+        // Use a free frame if available
+        frameToUse = freeFrameList.front();
+        freeFrameList.pop_front();
+    }
+    else
+    {
+        // No free frames, must perform page replacement
+        frameToUse = findVictimFrame_LRU();
+        if (frameToUse == -1)
+        {
+            // This should not happen in a well-managed system, but as a fallback:
+            std::cerr << "CRITICAL: No victim frame could be found!" << std::endl;
+            return;
+        }
+
+        // Evict the victim page
+        FrameEntry &victimFrame = frameTable[frameToUse];
+        Process *victimProcess = getProcessById(victimFrame.processId);
+
+        if (victimProcess)
+        {
+            Process::PageTableEntry &victimPageEntry = victimProcess->pageTable[victimFrame.virtualPageNum];
+            if (victimPageEntry.dirty)
+            {
+                // Write the page to the backing store if it was modified
+                // For this simulation, we'll just log it and increment the counter.
+                // In a real system, you would write the frame's data.
+                writePageToBackingStore(victimProcess->getId(), victimFrame.virtualPageNum, {}); // Empty data for now
+                numPagedOut++;
+            }
+            // Invalidate the victim's page table entry
+            victimPageEntry.present = false;
+            victimPageEntry.frameIndex = -1;
+        }
+    }
+
+    // Load the new page into the chosen frame
+    numPagedIn++;
+    frameTable[frameToUse].occupied = true;
+    frameTable[frameToUse].processId = proc->getId();
+    frameTable[frameToUse].virtualPageNum = vpn;
+    frameTable[frameToUse].lastUsedTimestamp = curCycle;
+
+    // Update the current process's page table
+    Process::PageTableEntry &newPageEntry = proc->pageTable[vpn];
+    newPageEntry.present = true;
+    newPageEntry.frameIndex = frameToUse;
+    newPageEntry.dirty = false; // Page is clean on load
+}
+
+bool accessMemory(Process *proc, int vpn, int curCycle)
+{
+    if (vpn >= proc->pageTable.size())
+    {
+        // This is an access beyond the process's allocated virtual memory
+        // This check should ideally be done before calling accessMemory
+        return false;
+    }
+
+    Process::PageTableEntry &pageEntry = proc->pageTable[vpn];
+
+    if (pageEntry.present)
+    {
+        // Page Hit! The page is already in physical memory.
+        std::lock_guard<std::mutex> lock(memoryMutex);
+        frameTable[pageEntry.frameIndex].lastUsedTimestamp = curCycle;
+        return true;
+    }
+    else
+    {
+        // Page Fault! The page is not in memory.
+        handlePageFault(proc, vpn, curCycle);
+        return true; // The fault has been handled.
+    }
 }
 
 void cpuCycleLoop()
@@ -1361,6 +1428,11 @@ public:
             // get the process from the queue
             {
                 std::unique_lock<std::mutex> lock(queueMutex);
+                
+                if (processQueue.empty()) {
+                    totalIdleTicks++;
+                }
+
                 queueCV.wait(lock, [this]()
                              { return !processQueue.empty() || !running; });
 
@@ -1369,30 +1441,6 @@ public:
 
                 processToExecute = processQueue.front();
                 processQueue.pop();
-            }
-
-            if (processToExecute->getMemoryStartIndex() == -1)
-            {
-                uint16_t memoryToAllocate = processToExecute->getRequiredMemorySize();
-                if (memoryToAllocate == 0)
-                {
-                    memoryToAllocate = getMemorySize();
-                }
-
-                int framesNeeded = memoryToAllocate / memPerFrame;
-                int memIndex = allocateMemory(framesNeeded);
-
-                if (memIndex == -1)
-                {
-                    {
-                        std::lock_guard<std::mutex> lock(queueMutex);
-                        processQueue.push(processToExecute);
-                    }
-                    queueCV.notify_all();
-                    std::this_thread::sleep_for(std::chrono::milliseconds(100)); // pause to prevent high CPU usage
-                    continue;
-                }
-                processToExecute->setMemoryAllocation(memIndex, framesNeeded);
             }
 
             // add to running list
@@ -1405,12 +1453,9 @@ public:
             while (processToExecute->canExecute() && running)
             {
                 processToExecute->executeInstruction(coreId);
-            }
-            if (processToExecute->getMemoryStartIndex() != -1)
-            {
-                freeMemory(processToExecute->getMemoryStartIndex(), processToExecute->getFramesAllocated());
-            }
+                totalActiveTicks++;
 
+            }
             // move to finished
             {
                 std::lock_guard<std::mutex> pLock(processMutex);
@@ -1497,6 +1542,11 @@ public:
 
             {
                 std::unique_lock<std::mutex> lock(queueMutex);
+
+                if (processQueue.empty()) {
+                totalIdleTicks++;
+            }
+
                 queueCV.wait(lock, [this]
                              { return !processQueue.empty() || !running; });
 
@@ -1531,22 +1581,7 @@ public:
             int executedCycles = 0;
             while (executedCycles < quantum && processToExecute->canExecute() && running)
             {
-                // NEW
-                uint16_t memoryToAllocate = processToExecute->getRequiredMemorySize();
-                if (processToExecute->getMemoryStartIndex() == -1)
-                {
-                    memPerProc = getMemorySize();
-                    int framesNeeded = memoryToAllocate / memPerFrame;
-                    int memIndex = allocateMemory(framesNeeded);
-
-                    if (memIndex == -1)
-                    {
-                        std::lock_guard<std::mutex> lock(queueMutex);
-                        processQueue.push(processToExecute);
-                        continue;
-                    }
-                    processToExecute->setMemoryAllocation(memIndex, framesNeeded);
-                }
+                totalActiveTicks++;
                 processToExecute->executeInstruction(coreId);
                 executedCycles++;
 
@@ -1565,10 +1600,7 @@ public:
             if (processToExecute->hasFinished())
             {
                 std::lock_guard<std::mutex> pLock(processMutex);
-                if (processToExecute->getMemoryStartIndex() != -1)
-                {
-                    freeMemory(processToExecute->getMemoryStartIndex(), processToExecute->getFramesAllocated());
-                }
+
                 runningProcesses.erase(std::remove(runningProcesses.begin(), runningProcesses.end(), processToExecute), runningProcesses.end());
                 finishedProcesses.push_back(processToExecute);
             }
@@ -1611,7 +1643,16 @@ void initialize()
         std::cout << "Total frames: " << totalFrames << std::endl;
         std::cout << "-------------------------------------------------------------------------" << std::endl;
         std::cout << "System Initialized. You may now create screens and perform other actions.\n\n";
+
+        frameTable.resize(totalFrames);
+        for (int i = 0; i < totalFrames; ++i)
+        {
+            freeFrameList.push_back(i);
+            if (memPerFrame > 0)
+                frameTable[i].data.resize(memPerFrame, 0);
+        }
     }
+
     else
         return;
 }
@@ -1633,6 +1674,7 @@ void createScreen(std::string &screenName, uint16_t memorySize)
     std::tm *timeinfo = std::localtime(&timestamp);
     std::strftime(buffer, sizeof(buffer), "%m/%d/%Y %I:%M:%S%p", timeinfo);
     newScreen.timeCreated = buffer;
+
     newScreen.isDetached = false;
 
     screenList.emplace_back(newScreen);
