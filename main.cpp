@@ -402,53 +402,61 @@ bool readConfig(){
 }
 
 //NEW
-int allocateMemory (int framesNeeded){
+int allocateMemory(int framesNeeded) {
     std::lock_guard<std::mutex> lock(memoryMutex);
-    int start = -1;
-    int count = 0;
 
-    for (int i=0; i<totalFrames; ++i) {
-        if (!memoryBlock[i]) {
-            if (count == 0)
-                start = i;
-            count++;
-            if (count == framesNeeded) {
-                // Allocate frames
-                for (int j = start; j < start + framesNeeded; ++j) {
-                    memoryBlock[j] = true;
-                }
-                return start; // Return the starting index of allocated frames
-            }
-        }
-        else{
-            count = 0; // Reset count if a used frame is encountered
+    if (memoryBlock.empty()) {
+        if (framesNeeded <= totalFrames) {
+            memoryBlock[0] = framesNeeded;
+            return 0;
+        } else {
+            return -1;
         }
     }
-    return -1; // Not enough memory available
+
+    int lastEnd = 0;
+    for (const auto& [start, size] : memoryBlock) {
+        int gap = start - lastEnd;
+        if (gap >= framesNeeded) {
+            memoryBlock[lastEnd] = framesNeeded;
+            return lastEnd;
+        }
+        lastEnd = start + size;
+    }
+
+    // Check space at the end
+    if (totalFrames - lastEnd >= framesNeeded) {
+        memoryBlock[lastEnd] = framesNeeded;
+        return lastEnd;
+    }
+
+    return -1; // Not enough space
 }
 
 //NEW
 void freeMemory(int startIndex, int frames) {
     std::lock_guard<std::mutex> lock(memoryMutex);
-    for (int i = startIndex; i < startIndex + frames; ++i)
-        memoryBlock[i] = false;
+    auto it = memoryBlock.find(startIndex);
+    if (it != memoryBlock.end() && it->second == frames) {
+        memoryBlock.erase(it);
+    }
 }
 
 //NEW
 int countExternalFragmentation() {
     std::lock_guard<std::mutex> lock(memoryMutex);
     int freeFrames = 0;
-    int last_frame = 0;
+    int lastEnd = 0;
 
-    for (auto const& [start, num_frames] : memoryBlock) {
-        freeFrames += (start - last_frame);
-        last_frame = start + num_frames;
+    for (const auto& [start, size] : memoryBlock) {
+        freeFrames += (start - lastEnd); // space between blocks
+        lastEnd = start + size;
     }
-    // add the final free block after the last allocated one
-    freeFrames += (totalFrames - last_frame);
 
+    // Space at the end
+    freeFrames += (totalFrames - lastEnd);
 
-    return (freeFrames * memPerFrame); // Return in KB
+    return freeFrames * memPerFrame; // in KB
 }
 
 
