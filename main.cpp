@@ -49,6 +49,9 @@ std::atomic<int> autoProcessCounter{0}; //for tracking auto-generated screen nam
 //std::vector<bool> memoryBlock; //true = used, false = free
 std::map<int, int> memoryBlock; //vector to map
 
+std::mutex memoryAccessMutex;
+std::map<uint16_t, int> memoryAccessTable; // addr -> process ID 
+
 //FOR CONFIG.txt
 int numCPU; //number of cores (between 1-128 inclusive)
 std::string schedulerType; //scheduler type("fcfs" or "rr")
@@ -529,6 +532,21 @@ private:
     uint16_t requiredMemorySize;
 
 public:
+
+    void shutdownDueToMemoryViolation(uint16_t address) {
+        std::time_t now = std::time(nullptr);
+        std::tm* localTime = std::localtime(&now);
+        char timeBuf[9]; // HH:MM:SS
+        std::strftime(timeBuf, sizeof(timeBuf), "%H:%M:%S", localTime);
+
+        std::ostringstream oss;
+        oss << "Process " << name << " shut down due to memory access violation error that occurred at "
+            << std::string(timeBuf) << ". 0x" << std::hex << std::uppercase << address << " invalid.";
+
+        logs.push_back(oss.str());
+        remainingInstructions = 0;
+    }
+
     // Constructor
     // update with memory size
     Process(const std::string& processName, int numInstructions = 100, uint16_t memSize = 0) 
@@ -788,7 +806,7 @@ public:
                     oss << "Executed a FOR loop.";
                     break;
                 
-                    // READ FUNCTION
+                // READ FUNCTION
                 case InstructionType::READ: {
                     const std::string& varName = instr.args[0];
                     const std::string& addrStr = instr.args[1];
@@ -802,8 +820,41 @@ public:
                     }
 
                     // checks whether the input memory is in range or not
+                    int memStart = getMemoryStartIndex() * memPerFrame;
+                    int memEnd = memStart + (getFramesAllocated() * memPerFrame);
+
+                    if (addr < memStart || addr + 1 >= memEnd) {
+                        shutdownDueToMemoryViolation(addr);
+                        return false;
+                    }
+
+                    // Lock access to shared memory
+                    {
+                        std::lock_guard<std::mutex> lock(memoryAccessMutex);
+                        if (memoryAccessTable.count(addr) && memoryAccessTable[addr] != id) {
+                            shutdownDueToMemoryViolation(addr);
+                            return false;
+                        }
+                        memoryAccessTable[addr] = id;
+                    }
+
+                    // Proceed with the read
+                    uint8_t low  = memoryBlock.count(addr)     ? memoryBlock[addr]     : 0;
+                    uint8_t high = memoryBlock.count(addr + 1) ? memoryBlock[addr + 1] : 0;
+                    uint16_t value = (high << 8) | low;
+                    variables[varName] = value;
+
+                    oss << "READ " << varName << " = mem[" << addrStr << "] -> " << value;
+
+                    // Release access
+                    {
+                        std::lock_guard<std::mutex> lock(memoryAccessMutex);
+                        memoryAccessTable.erase(addr);
+                    }
+
                     // 0xFFFF is harcoded due to using dynamic memory map. this is a max bounded check
-                    if (addr > 0xFFFF - 1) {
+                    
+                    /*if (addr > 0xFFFF - 1) {
                         oss << "READ ERROR: Address out of bounds.";
                         break;
                     }
@@ -817,10 +868,10 @@ public:
                     //variables[varName] = value;
 
                     oss << "READ " << varName << " = mem[" << addrStr << "] -> " << value;
-                    break;
-                    }
+                    break;*/
+                }
                 
-                    // WRITE FUNCTION
+                // WRITE FUNCTION
                 case InstructionType::WRITE: {
                     const std::string& addrStr = instr.args[0];
                     const std::string& valStr = instr.args[1];
@@ -836,8 +887,39 @@ public:
                     }
                     
                     // checks whether the input memory is in range or not 
+                    int memStart = getMemoryStartIndex() * memPerFrame;
+                    int memEnd = memStart + (getFramesAllocated() * memPerFrame);
+
+                    if (addr < memStart || addr + 1 >= memEnd) {
+                        shutdownDueToMemoryViolation(addr);
+                        return false;
+                    }
+
+                    // Lock access to shared memory
+                    {
+                        std::lock_guard<std::mutex> lock(memoryAccessMutex);
+                        if (memoryAccessTable.count(addr) && memoryAccessTable[addr] != id) {
+                            shutdownDueToMemoryViolation(addr);
+                            return false;
+                        }
+                        memoryAccessTable[addr] = id;
+                    }
+
+                    // Perform the write
+                    value = std::min<uint16_t>(value, std::numeric_limits<uint16_t>::max());
+                    memoryBlock[addr]     = static_cast<uint8_t>(value & 0xFF);
+                    memoryBlock[addr + 1] = static_cast<uint8_t>((value >> 8) & 0xFF);
+
+                    oss << "WRITE mem[" << addrStr << "] = " << value;
+
+                    // Release access
+                    {
+                        std::lock_guard<std::mutex> lock(memoryAccessMutex);
+                        memoryAccessTable.erase(addr);
+                    }
+
                     // 0xFFFF is harcoded due to using dynamic memory map. this is a max bounded check
-                    if (addr > 0xFFFF - 1) {
+                    /*if (addr > 0xFFFF - 1) {
                         oss << "WRITE ERROR: Address out of bounds.";
                         break;
                     }
@@ -849,7 +931,7 @@ public:
                     //memory[addr + 1] = (value >> 8) & 0xFF;
 
                     oss << "WRITE mem[" << addrStr << "] = " << value;
-                    break;
+                    break;*/
                 }
 
             }
