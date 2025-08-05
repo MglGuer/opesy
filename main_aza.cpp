@@ -531,24 +531,30 @@ private:
 
     uint16_t requiredMemorySize;
 
+    // NEW: Add these members to track memory violation details
+    bool memoryViolationShutdown{false};
+    std::string shutdownTime;
+    uint16_t invalidAddress{0};
+
 public:
 
     void shutdownDueToMemoryViolation(uint16_t address) {
+    // Set the state flags for the memory violation
+        memoryViolationShutdown = true;
+        invalidAddress = address;
         std::time_t now = std::time(nullptr);
         std::tm* localTime = std::localtime(&now);
         char timeBuf[9]; // HH:MM:SS
         std::strftime(timeBuf, sizeof(timeBuf), "%H:%M:%S", localTime);
-
-        std::ostringstream oss;
-        oss << "Process " << name << " shut down due to memory access violation error that occurred at "
-            << std::string(timeBuf) << ". 0x" << std::hex << std::uppercase << address << " invalid.";
-
-
-        std::string errorMsg = oss.str();
-        logs.push_back(errorMsg);
-
-        std::cout << "[ERROR]" << errorMsg << std::endl;
-        remainingInstructions = 0;
+        shutdownTime = std::string(timeBuf); // Store the time of the violation
+        // Log a simple message internally for debugging
+        std::ostringstream log_msg;
+        log_msg << "Process shut down: Memory access violation at address 0x" 
+                << std::hex << std::uppercase << address << " at " << shutdownTime;
+        logs.push_back(log_msg.str());
+        // Print a simple, immediate error to the console
+        std::cout << "[ERROR] Process " << name << " encountered a fatal memory access violation and will be shut down." << std::endl;
+        remainingInstructions = 0; // Mark the process as finished
     }
 
     // Constructor
@@ -987,6 +993,10 @@ public:
     remainingInstructions = totalInstructions;
 
     }
+
+    bool hadMemoryViolation() const { return memoryViolationShutdown; }
+    std::string getShutdownTime() const { return shutdownTime; }
+    uint16_t getInvalidAddress() const { return invalidAddress; }
 };
 //NEW
 // Process* getProcessById(int pid) {
@@ -1378,23 +1388,29 @@ public:
             // Execute for quantum cycles
             int executedCycles = 0;
             while (executedCycles < quantum && processToExecute->canExecute() && running) {
-                //NEW
-                uint16_t memoryToAllocate = processToExecute->getRequiredMemorySize();
-                if(processToExecute -> getMemoryStartIndex() == -1){
-                    memPerProc = getMemorySize();
+                if (processToExecute->getMemoryStartIndex() == -1) {
+                    uint16_t memoryToAllocate = processToExecute->getRequiredMemorySize();
+
+                    // If memory requirement is 0, assign a valid size
+                    if (memoryToAllocate == 0) {
+                        memoryToAllocate = getMemorySize();
+                    }
+
                     int framesNeeded = memoryToAllocate / memPerFrame;
                     int memIndex = allocateMemory(framesNeeded);
-                    
-                    if(memIndex == -1){
+
+                    if (memIndex == -1) {
+                        // Failed to allocate, re-queue and end this time slice
                         std::lock_guard<std::mutex> lock(queueMutex);
                         processQueue.push(processToExecute);
-                        continue;
+                        break;
                     }
                     processToExecute->setMemoryAllocation(memIndex, framesNeeded);
                 }
+
                 processToExecute->executeInstruction(coreId);
                 executedCycles++;
-                
+
                 // Small yield periodically to prevent CPU hogging
                 if (executedCycles % 10 == 0) {
                     std::this_thread::yield();
@@ -1751,83 +1767,72 @@ void screen(std::string &screenCommand) {
         }
         return;
     }
-    else if(option == "-r" && !argument.empty()) {
+else if(option == "-r" && !argument.empty()) {
         std::string screenName = argument;
-        bool found = false;
+        Process* process = nullptr;
         
-        auto finishedIt = std::find_if(finishedProcesses.begin(), finishedProcesses.end(),
-            [&screenName](const Process* p) { return p->getName() == screenName; });
-        
-        if (finishedIt != finishedProcesses.end()) {
-            std::cout << "Process \"" << screenName << "\" has already finished execution and cannot be accessed." << std::endl << std::endl;
+        // Find the process in the master list of all created processes
+        auto it = std::find_if(allProcesses.begin(), allProcesses.end(),
+            [&](const std::unique_ptr<Process>& p) { return p->getName() == screenName; });
+
+        if (it == allProcesses.end()) {
+            // This handles both processes that never existed and finished processes, per the PDF 
+            std::cout << "Process " << screenName << " not found." << std::endl << std::endl;
             return;
         }
         
-        for(auto& scr : screenList) {
-            if(scr.screenName == screenName) {
-                clearScreen();
+        process = it->get();
 
-                curScreen = scr;
-                std::cout << "Screen: " << curScreen.screenName << std::endl;
-                auto it = std::find_if(allProcesses.begin(), allProcesses.end(),
-                    [&screenName](const std::unique_ptr<Process>& p) { return p->getName() == screenName; });
-                
-                if (it != allProcesses.end()) {
-                    std::cout << "Running instruction: " << (*it)->getCurrentInstruction() 
-                            << " out of " << (*it)->getTotalInstructions() << std::endl;
-                } else {
-                    std::cout << "Running instruction: " << curScreen.curInstruction 
-                            << " out of " << curScreen.totalInstruction << std::endl;
-                }
-                
-                std::cout << "Time Created: " << curScreen.timeCreated << std::endl << std::endl;
-                scr.isDetached = false;
-                found = true;
-                break;
-            }
-        }
-        if(!found) {
-            std::cout << "Screen \"" << screenName << "\" not found." << std::endl << std::endl;
-            return;
-        }
+        // Check the process state to decide which message to print
+        if (process->hadMemoryViolation()) {
+            // Case 1: Process shut down due to memory violation. 
+            std::cout << "Process " << process->getName() 
+                      << " shut down due to memory access violation error that occurred at "
+                      << process->getShutdownTime() << ". 0x" << std::hex << std::uppercase 
+                      << process->getInvalidAddress() << " invalid." << std::endl << std::endl;
+        } else if (process->hasFinished()) {
+            // Case 2: Process finished normally, but is treated as "not found" for re-attachment. 
+            std::cout << "Process " << screenName << " not found." << std::endl << std::endl;
+        } else {
+            // Case 3: Process is still running, allow attaching to view its live status. 
+            clearScreen();
+            intro();
+            std::cout << "--- Attaching to running screen: " << process->getName() << " ---" << std::endl;
+            std::cout << "--------------------------------------------------" << std::endl;
+            std::cout << "Type 'process-smi' to view details or 'exit' to detach." << std::endl;
 
-        if (found) {
             std::string screenInput;
-            while(screenInput != "exit") {
-                std::cout << "\nroot:\\> ";
+            while (true) {
+                std::cout << "\n" << process->getName() << " (live):\\> ";
                 std::getline(std::cin, screenInput);
-                if(screenInput == "process-smi") {
-                    auto it = std::find_if(allProcesses.begin(), allProcesses.end(),
-                        [&screenName](const std::unique_ptr<Process>& p) { return p->getName() == screenName; });
-                    
-                    if (it != allProcesses.end()) {
-                        Process* process = it->get();
-                        std::cout << "\nProcess name: " << process->getName();
-                        
-                        if (process->hasFinished()) {
-                            std::cout << " Finished!" << std::endl;
-                        } else {
-                            std::cout << std::endl;
-                        }
-                        
-                        std::cout << "ID: " << process->getId() << std::endl;
-                        std::cout << "Logs:" << std::endl;
-                        for (const auto& logEntry : process->getLogs()) {
-                            if (logEntry.find("Hello world from") != std::string::npos) {
-                                std::cout << logEntry << std::endl;
-                            }
-                        }
-                        std::cout << "\nCurrent instruction line: " << process->getCurrentInstruction() << std::endl;
-                        std::cout << "Lines of code: " << process->getTotalInstructions() << "\n" << std::endl;
-                    }   
-                }
-                else if (screenInput == "exit"){
+
+                if (screenInput == "process-smi") {
+                    // This block is for viewing a live process
+                    setColor(7);
+                    std::cout << "\nProcess name: " << process->getName() << " (RUNNING)" << std::endl;
+                    setColor(7);
+                    std::cout << "ID: ";
+                    setColor(14);
+                    std::cout << process->getId() << std::endl;
+                    setColor(7);
+                    std::cout << "Assigned Core: ";
+                    setColor(14);
+                    std::cout << process->getAssignedCore() << std::endl;
+                    setColor(7);
+                    std::cout << "Instructions: ";
+                    setColor(14);
+                    std::cout << process->getCurrentInstruction() << "/" << process->getTotalInstructions() << std::endl;
+                    setColor(7);
+                    std::cout << "Logs:" << std::endl;
+                    for (const auto& logEntry : process->getLogs()) {
+                        std::cout << logEntry << std::endl;
+                    }
+                } else if (screenInput == "exit") {
                     clearScreen();
                     intro();
-                    break; 
-                }
-                else{
-                    std::cout << "Invalid command. You can only input 'process-smi' or 'exit'. " << std::endl << std::endl;
+                    break;
+                } else {
+                    std::cout << "Invalid command. You can only use 'process-smi' or 'exit'." << std::endl;
                 }
             }
         }
