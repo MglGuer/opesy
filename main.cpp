@@ -891,6 +891,11 @@ public:
                     }
                     
                     // checks whether the input memory is in range or not 
+                    std::cout << "[DEBUG] memoryStartIndex: " << getMemoryStartIndex()
+                        << ", framesAllocated: " << getFramesAllocated() << std::endl;
+                    std::cout.flush();  // force flush
+
+                    std::ofstream debugOut("debug_log.txt", std::ios::app);
                     int memStart = getMemoryStartIndex() * memPerFrame;
                     int memEnd = memStart + (getFramesAllocated() * memPerFrame);
 
