@@ -499,34 +499,79 @@ bool readConfig()
     return true;
 }
 // NEW
-std::vector<int> readPageFromBackingStore(int pid, int vpn)
+std::vector<uint8_t> readPageFromBackingStore(int pid, int vpn)
 {
-    std::ifstream in("backing_store.txt");
+    std::ifstream in("csopesy-backing-store.txt");
     std::string line;
     while (std::getline(in, line))
     {
         std::istringstream iss(line);
         int filePid, fileVpn;
-        iss >> filePid >> fileVpn;
+        char colon; // To consume the colon
+        iss >> filePid >> fileVpn >> colon;
+
         if (filePid == pid && fileVpn == vpn)
         {
-            std::vector<int> data;
+            std::vector<uint8_t> data;
             int val;
             while (iss >> val)
-                data.push_back(val);
+            {
+                data.push_back(static_cast<uint8_t>(val));
+            }
+            // Ensure the data size matches the frame size, padding with 0 if necessary
+            data.resize(memPerFrame, 0);
             return data;
         }
     }
-    return std::vector<int>(8, 0); // default page
+    // If page not found in backing store, it's a new page, so return a zeroed-out vector
+    return std::vector<uint8_t>(memPerFrame, 0);
 }
 
-void writePageToBackingStore(int pid, int vpn, const std::vector<int> &data)
-{
-    std::ofstream out("backing_store.txt", std::ios::app);
-    out << pid << " " << vpn;
-    for (int val : data)
-        out << " " << val;
-    out << "\n";
+// REPLACE WITH THIS
+void writePageToBackingStore(int pid, int vpn, const std::vector<uint8_t>& data) {
+    const std::string filename = "csopesy-backing-store.txt";
+    std::vector<std::string> lines;
+    std::string line;
+    bool pageFound = false;
+
+    // Read all existing lines from the file
+    std::ifstream inFile(filename);
+    while (std::getline(inFile, line)) {
+        lines.push_back(line);
+    }
+    inFile.close();
+
+    // Prepare the new line for the page being written
+    std::ostringstream new_line_ss;
+    new_line_ss << pid << " " << vpn << " :";
+    for (const auto& byte : data) {
+        new_line_ss << " " << static_cast<int>(byte);
+    }
+    std::string new_line = new_line_ss.str();
+
+    // Try to find and replace the line for the existing page
+    for (auto& l : lines) {
+        std::istringstream iss(l);
+        int filePid, fileVpn;
+        iss >> filePid >> fileVpn;
+        if (filePid == pid && fileVpn == vpn) {
+            l = new_line;
+            pageFound = true;
+            break;
+        }
+    }
+
+    // If the page was not found, add it as a new line
+    if (!pageFound) {
+        lines.push_back(new_line);
+    }
+
+    // Write all lines (original + updated/new) back to the file
+    std::ofstream outFile(filename, std::ios::trunc);
+    for (const auto& l : lines) {
+        outFile << l << std::endl;
+    }
+    outFile.close();
 }
 // END OF NEW
 // NEW
@@ -1046,74 +1091,7 @@ public:
         remainingInstructions = totalInstructions;
     }
 };
-// NEW
-//  Process* getProcessById(int pid) {
-//      std::lock_guard<std::mutex> lock(processMutex);
-//      for (auto* p : runningProcesses) {
-//          if (p->getId() == pid) {
-//              return p;
-//          }
-//      }
-//      return nullptr;
-//  }
 
-// void handlePageFault(Process* proc, int vpn, unsigned long long curCycle) {
-//     int frame = -1;
-
-//     if (!freeFrames.empty()) {
-//         frame = freeFrames.front();
-//         freeFrames.pop_front();
-//     } else {
-//         // LRU Selection
-//         uint64_t oldest = UINT64_MAX;
-//         int victim = -1;
-//         for (int i = 0; i < frameTable.size(); ++i) {
-//             if (frameTable[i].occupied && frameTable[i].lastUsed < oldest) {
-//                 oldest = frameTable[i].lastUsed;
-//                 victim = i;
-//             }
-//         }
-
-//         if (victim != -1) {
-//             auto& v = frameTable[victim];
-//             auto procPtr = getProcessById(v.processId);
-//             if (procPtr) {
-//                 auto& victimPage = procPtr->getPage(v.virtualPage);
-//                 if (victimPage.dirty) {
-//                     numPagedOut++;
-//                     writePageToBackingStore(v.processId, v.virtualPage, std::vector<int>(8, 0));
-//                 }
-//                 victimPage.present = false;
-//                 victimPage.frameIndex = -1;
-//             }
-//             frame = victim;
-//         }
-//     }
-
-//     // Page in
-//     numPagedIn++;
-//     frameTable[frame] = {proc->getId(), vpn, curCycle, true};
-
-//     auto& newPage = proc->getPage(vpn);
-//     newPage.present = true;
-//     newPage.frameIndex = frame;
-//     newPage.lastUsed = curCycle;
-//     newPage.dirty = false;
-// }
-
-//  bool accessMemory(Process* proc, int vpn, int curCycle) {
-//     auto& entry = proc->getPage(vpn);
-//     if (entry.present) {
-//         frameTable[entry.frameIndex].lastUsed = curCycle;
-//         entry.lastUsed = curCycle;
-//         return true;
-//     }
-//     handlePageFault(proc, vpn, curCycle);
-//     return true;
-// }
-// END OF NEW
-
-// NEW: Function to dump memory status to a file
 void printVMStat()
 {
     std::lock_guard<std::mutex> lock(memoryMutex);
@@ -1173,6 +1151,7 @@ int findVictimFrame_LRU()
     return victimFrameIndex;
 }
 
+// REPLACE WITH THIS
 void handlePageFault(Process *proc, int vpn, unsigned long long curCycle)
 {
     std::lock_guard<std::mutex> lock(memoryMutex); // Lock before modifying shared memory structures
@@ -1191,7 +1170,6 @@ void handlePageFault(Process *proc, int vpn, unsigned long long curCycle)
         frameToUse = findVictimFrame_LRU();
         if (frameToUse == -1)
         {
-            // This should not happen in a well-managed system, but as a fallback:
             std::cerr << "CRITICAL: No victim frame could be found!" << std::endl;
             return;
         }
@@ -1205,10 +1183,8 @@ void handlePageFault(Process *proc, int vpn, unsigned long long curCycle)
             Process::PageTableEntry &victimPageEntry = victimProcess->pageTable[victimFrame.virtualPageNum];
             if (victimPageEntry.dirty)
             {
-                // Write the page to the backing store if it was modified
-                // For this simulation, we'll just log it and increment the counter.
-                // In a real system, you would write the frame's data.
-                writePageToBackingStore(victimProcess->getId(), victimFrame.virtualPageNum, {}); // Empty data for now
+                // **FIXED:** Write the actual page data to the backing store
+                writePageToBackingStore(victimProcess->getId(), victimFrame.virtualPageNum, victimFrame.data);
                 numPagedOut++;
             }
             // Invalidate the victim's page table entry
@@ -1217,18 +1193,23 @@ void handlePageFault(Process *proc, int vpn, unsigned long long curCycle)
         }
     }
 
+    // **NEW:** Read the page's contents from the backing store.
+    // This will return a zeroed vector if the page is new.
+    std::vector<uint8_t> pageData = readPageFromBackingStore(proc->getId(), vpn);
+
     // Load the new page into the chosen frame
     numPagedIn++;
     frameTable[frameToUse].occupied = true;
     frameTable[frameToUse].processId = proc->getId();
     frameTable[frameToUse].virtualPageNum = vpn;
     frameTable[frameToUse].lastUsedTimestamp = curCycle;
+    frameTable[frameToUse].data = pageData; // **FIXED:** Load the data into the frame
 
     // Update the current process's page table
     Process::PageTableEntry &newPageEntry = proc->pageTable[vpn];
     newPageEntry.present = true;
     newPageEntry.frameIndex = frameToUse;
-    newPageEntry.dirty = false; // Page is clean on load
+    newPageEntry.dirty = false; // Page is always clean on load
 }
 
 bool accessMemory(Process *proc, int vpn, int curCycle)
