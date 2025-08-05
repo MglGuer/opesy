@@ -24,6 +24,8 @@ class Process;
 class Scheduler;
 class FCFSScheduler;
 class RoundRobinScheduler;
+bool accessMemory(Process* proc, int vpn, int curCycle);
+void handlePageFault(Process* proc, int vpn, unsigned long long curCycle);
 
 
 // Global variables
@@ -104,21 +106,17 @@ std::vector<Instruction> parseUserInstructions(const std::string& input) {
             continue;
         }
         
-        std::istringstream instrStream(token);
         std::string op;
-        instrStream >> op;
-        
-        // Clean up op: remove leading/trailing spaces, '(' and '\' characters
-        op.erase(std::remove_if(op.begin(), op.end(), [](unsigned char c) {
-            return std::isspace(c) || c == '(' || c == '\\';
-        }), op.end());
-        std::cout << "[DEBUG] Cleaned Operation: [" << op << "]" << std::endl;
-
-
-        std::cout << "[DEBUG] Operation: [" << op << "]\n";
+        size_t op_end = token.find_first_of(" (");
+        if (op_end != std::string::npos) {
+            op = token.substr(0, op_end);
+        } else {
+            op = token;
+        }
         
         Instruction instr;
         instr.args.clear();
+        std::cout << "[DEBUG] Operation: [" << op << "]\n";
         
         if (op == "PRINT") {
             instr.type = InstructionType::PRINT;
@@ -151,9 +149,7 @@ std::vector<Instruction> parseUserInstructions(const std::string& input) {
                         cleaned += ch;
                     }
                 }
-                if (escape) {
-                    cleaned += '\\';
-                }
+                if (escape) cleaned += '\\';
 
                 // Trim leading/trailing whitespace
                 cleaned.erase(0, cleaned.find_first_not_of(" \t\n\r"));
@@ -167,6 +163,7 @@ std::vector<Instruction> parseUserInstructions(const std::string& input) {
             }
         }
         else if (op == "DECLARE") {
+            std::istringstream instrStream(token.substr(op.length()));
             std::string var, value;
             instrStream >> var >> value;
             if (var.empty() || value.empty()) {
@@ -178,6 +175,7 @@ std::vector<Instruction> parseUserInstructions(const std::string& input) {
             std::cout << "[DEBUG] Parsed DECLARE: " << var << " = " << value << "\n";
         } 
         else if (op == "ADD") {
+            std::istringstream instrStream(token.substr(op.length()));
             std::string a, b, c;
             instrStream >> a >> b >> c;
             if (a.empty() || b.empty() || c.empty()) {
@@ -189,6 +187,7 @@ std::vector<Instruction> parseUserInstructions(const std::string& input) {
             std::cout << "[DEBUG] Parsed ADD: " << a << " = " << b << " + " << c << "\n";
         } 
         else if (op == "SUBTRACT") {
+            std::istringstream instrStream(token.substr(op.length()));
             std::string a, b, c;
             instrStream >> a >> b >> c;
             if (a.empty() || b.empty() || c.empty()) {
@@ -198,26 +197,30 @@ std::vector<Instruction> parseUserInstructions(const std::string& input) {
             instr.type = InstructionType::SUBTRACT;
             instr.args = {a, b, c};
         } 
-        else if (op == "READ") {
-            std::string varName, memAddr;
-            instrStream >> varName >> memAddr;
-            if (varName.empty() || memAddr.empty()) {
-                std::cerr << "Warning: Invalid READ instruction: " << token << std::endl;
-                continue;
-            }
-            instr.type = InstructionType::READ;
-            instr.args = {varName, memAddr};
-        } else if (op == "WRITE") {
-            std::string memAddr, val;
-            instrStream >> memAddr >> val;
-            if (memAddr.empty() || val.empty()) {
+        else if (op == "WRITE") {
+            std::istringstream instrStream(token.substr(op.length()));
+            std::string addr, var;
+            instrStream >> addr >> var;
+            if (addr.empty() || var.empty()) {
                 std::cerr << "Warning: Invalid WRITE instruction: " << token << std::endl;
                 continue;
             }
             instr.type = InstructionType::WRITE;
-            instr.args = {memAddr, val};
-        }
+            instr.args = {addr, var};
+        } 
+        else if (op == "READ") {
+            std::istringstream instrStream(token.substr(op.length()));
+            std::string var, addr;
+            instrStream >> var >> addr;
+            if (var.empty() || addr.empty()) {
+                std::cerr << "Warning: Invalid READ instruction: " << token << std::endl;
+                continue;
+            }
+            instr.type = InstructionType::READ;
+            instr.args = {var, addr};
+        } 
         else if (op == "SLEEP") {
+            std::istringstream instrStream(token.substr(op.length()));
             std::string ticks;
             instrStream >> ticks;
             if (ticks.empty()) {
@@ -228,6 +231,7 @@ std::vector<Instruction> parseUserInstructions(const std::string& input) {
             instr.args = {ticks};
         } 
         else if (op == "MULTIPLY") {
+            std::istringstream instrStream(token.substr(op.length()));
             std::string a, b, c;
             instrStream >> a >> b >> c;
             if (a.empty() || b.empty() || c.empty()) {
@@ -238,6 +242,7 @@ std::vector<Instruction> parseUserInstructions(const std::string& input) {
             instr.args = {a, b, c};
         } 
         else if (op == "DIVIDE") {
+            std::istringstream instrStream(token.substr(op.length()));
             std::string a, b, c;
             instrStream >> a >> b >> c;
             if (a.empty() || b.empty() || c.empty()) {
@@ -260,6 +265,20 @@ std::vector<Instruction> parseUserInstructions(const std::string& input) {
     return result;
 }
 
+//NEW
+// struct FrameEntry{
+//     int processId = -1;
+//     int virtualPage = -1;
+//     uint64_t lastUsed = 0;
+//     bool occupied = false;
+// };
+
+// std::deque<int> freeFrames;
+// std::vector<FrameEntry> frameTable(totalFrames);
+
+// std::atomic<uint64_t> numPagedIn{0};
+// std::atomic<uint64_t> numPagedOut{0};
+//END OF NEW
 //NEW
 bool isValidMemorySize(uint16_t num){
     return (num >= 64) && (num <= 65536) && ((num & (num - 1)) == 0);
@@ -400,7 +419,31 @@ bool readConfig(){
     //memoryBlock = std::vector<bool>(totalFrames, false); // Initialize memory usage tracking
     return true;
 }
+//NEW
+std::vector<int> readPageFromBackingStore(int pid, int vpn) {
+    std::ifstream in("backing_store.txt");
+    std::string line;
+    while (std::getline(in, line)) {
+        std::istringstream iss(line);
+        int filePid, fileVpn;
+        iss >> filePid >> fileVpn;
+        if (filePid == pid && fileVpn == vpn) {
+            std::vector<int> data;
+            int val;
+            while (iss >> val) data.push_back(val);
+            return data;
+        }
+    }
+    return std::vector<int>(8, 0);  // default page
+}
 
+void writePageToBackingStore(int pid, int vpn, const std::vector<int>& data) {
+    std::ofstream out("backing_store.txt", std::ios::app);
+    out << pid << " " << vpn;
+    for (int val : data) out << " " << val;
+    out << "\n";
+}
+//END OF NEW
 //NEW
 int allocateMemory(int framesNeeded) {
     std::lock_guard<std::mutex> lock(memoryMutex);
@@ -515,25 +558,28 @@ public:
           remainingInstructions(other.remainingInstructions), currentInstruction(other.currentInstruction),
           timeCreated(std::move(other.timeCreated)), assignedCore(other.assignedCore),
           logFile(std::move(other.logFile)), instructions(std::move(other.instructions)),
-          variables(std::move(other.variables)), sleepUntilCycle(other.sleepUntilCycle.load()) {
+          variables(std::move(other.variables)),
+          cyclesSinceLastExec(other.cyclesSinceLastExec.load()),
+          sleepUntilCycle(other.sleepUntilCycle.load()) {
     }
     
     // Move assignment operator
     Process& operator=(Process&& other) noexcept {
-        if (this != &other) {
-            name = std::move(other.name);
-            id = other.id;
-            totalInstructions = other.totalInstructions;
-            remainingInstructions = other.remainingInstructions;
-            currentInstruction = other.currentInstruction;
-            timeCreated = std::move(other.timeCreated);
-            assignedCore = other.assignedCore;
-            logFile = std::move(other.logFile);
-            instructions = std::move(other.instructions);
-            variables = std::move(other.variables);
-            sleepUntilCycle.store(other.sleepUntilCycle.load());
-        }
-        return *this;
+    if (this != &other) {
+        name = std::move(other.name);
+        id = other.id;
+        totalInstructions = other.totalInstructions;
+        remainingInstructions = other.remainingInstructions;
+        currentInstruction = other.currentInstruction;
+        timeCreated = std::move(other.timeCreated);
+        assignedCore = other.assignedCore;
+        logFile = std::move(other.logFile);
+        instructions = std::move(other.instructions);
+        variables = std::move(other.variables);
+        cyclesSinceLastExec.store(other.cyclesSinceLastExec.load());
+        sleepUntilCycle.store(other.sleepUntilCycle.load());
+    }
+    return *this;
     }
     
     // Destructor
@@ -542,6 +588,23 @@ public:
             logFile->close();
         }
     }
+    // struct PageTableEntry {
+    //     int frameIndex = -1;
+    //     bool present = false;
+    //     bool dirty = false;
+    //     uint64_t lastUsed = 0;
+    // };
+
+    // std::vector<PageTableEntry> pageTable;
+
+    // void initPageTable(int numPages) {
+    //     pageTable.resize(numPages);
+    // }
+
+    // PageTableEntry& getPage(int vpn) {
+    //     return pageTable[vpn];
+    // }
+
     //NEW
     int getMemoryStartIndex() const {
         return memoryStartIndex;
@@ -659,6 +722,9 @@ public:
                     } else {
                         variables[instr.args[0]] = static_cast<uint16_t>(std::stoul(instr.args[1]));
                         oss << "Declared " << instr.args[0] << " = " << instr.args[1];
+                        // int virtualPage = rand() % pageTable.size();
+                        // accessMemory(this, virtualPage, global_simulated_cycles);
+                        // getPage(virtualPage).dirty = true;
                     }
                     break;
                 }
@@ -667,6 +733,9 @@ public:
                     uint16_t val3 = variables.count(instr.args[2]) ? variables[instr.args[2]] : static_cast<uint16_t>(std::stoul(instr.args[2]));
                     variables[instr.args[0]] = val2 + val3;
                     oss << "ADD: " << instr.args[0] << " = " << val2 << " + " << val3 << " -> " << variables[instr.args[0]];
+                    // int virtualPage = rand() % pageTable.size(); //NEW
+                    // accessMemory(this, virtualPage, global_simulated_cycles);
+                    // getPage(virtualPage).dirty = true; //END OF NEW
                     break;
                 }
                 case InstructionType::SUBTRACT: {
@@ -675,6 +744,9 @@ public:
                     uint16_t result = (val2 > val3) ? val2 - val3 : 0; // Clamp at 0
                     variables[instr.args[0]] = result;
                     oss << "SUBTRACT: " << instr.args[0] << " = " << val2 << " - " << val3 << " -> " << result;
+                    // int virtualPage = rand() % pageTable.size();
+                    // accessMemory(this, virtualPage, global_simulated_cycles);
+                    // getPage(virtualPage).dirty = true;
                     break;
                 }
                 case InstructionType::SLEEP: {
@@ -688,6 +760,10 @@ public:
                     uint16_t val3 = variables.count(instr.args[2]) ? variables[instr.args[2]] : static_cast<uint16_t>(std::stoul(instr.args[2]));
                     variables[instr.args[0]] = val2 * val3;
                     oss << "MULTIPLY: " << instr.args[0] << " = " << val2 << " * " << val3 << " -> " << variables[instr.args[0]];
+                    // int virtualPage = rand() % pageTable.size();
+                    // accessMemory(this, virtualPage, global_simulated_cycles);
+                    // getPage(virtualPage).dirty = true;
+
                     break;
                 }           
                 case InstructionType::DIVIDE: {
@@ -696,6 +772,10 @@ public:
                     uint16_t result = (val3 == 0) ? 0 : (val2 / val3);
                     variables[instr.args[0]] = result;
                     oss << "DIVIDE: " << instr.args[0] << " = " << val2 << " / " << val3 << " -> " << result;
+                    // int virtualPage = rand() % pageTable.size();
+                    // accessMemory(this, virtualPage, global_simulated_cycles);
+                    // getPage(virtualPage).dirty = true;
+
                     break;
                 }
                 case InstructionType::FOR:
@@ -822,6 +902,72 @@ public:
 
     }
 };
+//NEW
+// Process* getProcessById(int pid) {
+//     std::lock_guard<std::mutex> lock(processMutex);
+//     for (auto* p : runningProcesses) {
+//         if (p->getId() == pid) {
+//             return p;
+//         }
+//     }
+//     return nullptr;
+// }
+
+// void handlePageFault(Process* proc, int vpn, unsigned long long curCycle) {
+//     int frame = -1;
+
+//     if (!freeFrames.empty()) {
+//         frame = freeFrames.front();
+//         freeFrames.pop_front();
+//     } else {
+//         // LRU Selection
+//         uint64_t oldest = UINT64_MAX;
+//         int victim = -1;
+//         for (int i = 0; i < frameTable.size(); ++i) {
+//             if (frameTable[i].occupied && frameTable[i].lastUsed < oldest) {
+//                 oldest = frameTable[i].lastUsed;
+//                 victim = i;
+//             }
+//         }
+
+//         if (victim != -1) {
+//             auto& v = frameTable[victim];
+//             auto procPtr = getProcessById(v.processId);
+//             if (procPtr) {
+//                 auto& victimPage = procPtr->getPage(v.virtualPage);
+//                 if (victimPage.dirty) {
+//                     numPagedOut++;
+//                     writePageToBackingStore(v.processId, v.virtualPage, std::vector<int>(8, 0));
+//                 }
+//                 victimPage.present = false;
+//                 victimPage.frameIndex = -1;
+//             }
+//             frame = victim;
+//         }
+//     }
+
+//     // Page in
+//     numPagedIn++;
+//     frameTable[frame] = {proc->getId(), vpn, curCycle, true};
+
+//     auto& newPage = proc->getPage(vpn);
+//     newPage.present = true;
+//     newPage.frameIndex = frame;
+//     newPage.lastUsed = curCycle;
+//     newPage.dirty = false;
+// }
+
+// bool accessMemory(Process* proc, int vpn, int curCycle) {
+//     auto& entry = proc->getPage(vpn);
+//     if (entry.present) {
+//         frameTable[entry.frameIndex].lastUsed = curCycle;
+//         entry.lastUsed = curCycle;
+//         return true;
+//     }
+//     handlePageFault(proc, vpn, curCycle);
+//     return true;
+// }
+//END OF NEW
 
 // NEW: Function to dump memory status to a file
 void printVMStat() {
@@ -1013,7 +1159,6 @@ public:
                 memoryToAllocate = getMemorySize();
             }
 
-            // fix: Use the correct memory size variable for the calculation
             int framesNeeded = memoryToAllocate / memPerFrame;
             int memIndex = allocateMemory(framesNeeded);
 
@@ -1625,14 +1770,16 @@ void screen(std::string &screenCommand) {
         }
 
         // Get the remaining string (should be quoted)
-        std::string remainingInput;
-        std::getline(iss, remainingInput);
-        std::stringstream quotedStream(remainingInput);
         std::string instructionsString;
+        std::getline(iss >> std::ws, instructionsString);
 
-        std::getline(quotedStream, instructionsString, '"'); // Skip first quote
-        std::getline(quotedStream, instructionsString, '"'); // Read the actual content
-
+        if (instructionsString.length() >= 2 && instructionsString.front() == '"' && instructionsString.back() == '"') {
+            instructionsString = instructionsString.substr(1, instructionsString.length() - 2);
+        } else {
+            std::cout << "invalid command: instructions must be enclosed in double quotes" << std::endl;
+            return;
+        }
+        
         if (instructionsString.empty()) {
             std::cout << "invalid command" << std::endl;
             return;
@@ -1646,6 +1793,7 @@ void screen(std::string &screenCommand) {
 
         createScreen(processName, memSize);
         Process* newProcess = allProcesses.back().get();
+        //newProcess -> initPageTable(totalFrames);
         newProcess->setInstructions(parsed);
 
         if (scheduler && scheduler->isRunning()) {
